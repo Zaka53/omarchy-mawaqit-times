@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.zaka53.mawaqit-times",
+  "name": "Mawaqit Prayer Times",
+  "version": "1.0.0",
+  "author": "Zaka53",
+  "license": "MIT",
+  "description": "Prayer times for a mosque of your choosing, fetched from mawaqit.net",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Mawaqit Prayer Times",
+    "description": "Prayer times for a mosque of your choosing, fetched from mawaqit.net",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
