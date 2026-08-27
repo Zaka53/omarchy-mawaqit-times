@@ -9,6 +9,8 @@ The bar pill shows the next prayer and its time (e.g. `Asr 16:43`). Click it
 to open a panel with all five prayers, sunrise, and Jumu'a, with the next
 prayer highlighted.
 
+![The Preview](preview.png)
+
 ## Install
 
 ```
