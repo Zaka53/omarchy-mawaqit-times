@@ -26,10 +26,26 @@ USER_AGENT = (
 
 LABELS = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"]
 
+MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # a mosque page is a few hundred KB; 5 MiB is generous
+
 
 def fail(message):
     print(json.dumps({"ok": False, "error": message}))
     sys.exit(0)
+
+
+def sanitize_display(value, max_len=200):
+    """Strip angle brackets from a value pulled out of mawaqit.net's page.
+
+    QML renders these fields with Text.AutoText, which promotes a string
+    starting with '<tag>' into rich-text/HTML rendering (e.g. an <img src=...>
+    would trigger an unprompted network fetch as soon as the panel is drawn).
+    Since this data comes from the remote page, not from us, treat it as
+    untrusted and never let it look like markup.
+    """
+    text = value if isinstance(value, str) else ""
+    text = text.replace("<", "").replace(">", "")
+    return text.strip()[:max_len]
 
 
 def mosque_slug(raw):
@@ -74,13 +90,19 @@ def fetch(slug):
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
-            return response.read().decode("utf-8", "replace")
+            # Bounded read: .read(n) fills up to n bytes and stops, so a
+            # hostile or misbehaving endpoint can't force unbounded memory use.
+            body = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             fail(f"No mosque found for '{slug}'")
         fail(f"mawaqit.net returned HTTP {e.code}")
     except urllib.error.URLError as e:
         fail(f"Could not reach mawaqit.net: {e.reason}")
+
+    if len(body) > MAX_RESPONSE_BYTES:
+        fail("mawaqit.net response was too large")
+    return body.decode("utf-8", "replace")
 
 
 def main():
@@ -114,12 +136,12 @@ def main():
     print(json.dumps({
         "ok": True,
         "slug": slug,
-        "name": data.get("name") or slug,
+        "name": sanitize_display(data.get("name") or slug),
         "timezone": timezone,
         "labels": LABELS,
-        "times": times,
-        "shuruq": data.get("shuruq") or "",
-        "jumua": data.get("jumua") or "",
+        "times": [sanitize_display(t, 16) for t in times],
+        "shuruq": sanitize_display(data.get("shuruq") or "", 16),
+        "jumua": sanitize_display(data.get("jumua") or "", 16),
         "fetchedAtEpochMs": int(now_dt.timestamp() * 1000),
         "nowLocalMinutes": now_local_minutes,
     }))

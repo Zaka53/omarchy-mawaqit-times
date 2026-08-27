@@ -41,6 +41,15 @@ Panel {
   // under any checkout path.
   readonly property string scriptPath:
     decodeURIComponent(Qt.resolvedUrl("scripts/mawaqit_times.py").toString().replace(/^file:\/\//, ""))
+  readonly property string settingsIoScript:
+    decodeURIComponent(Qt.resolvedUrl("scripts/settings_io.py").toString().replace(/^file:\/\//, ""))
+  readonly property string settingsPath:
+    Quickshell.env("HOME") + "/.local/state/omarchy/settings/mawaqit-times.json"
+
+  // Caps how much of the fetch helper's stdout we'll act on. The helper's
+  // own HTTP read is bounded (see mawaqit_times.py), so real output is at
+  // most a few KB; this is a defensive backstop, not the primary limit.
+  readonly property int maxHelperOutputChars: 1048576
 
   function computeBarLabel() {
     root.tick
@@ -78,6 +87,22 @@ Panel {
     fetchProc.running = true
   }
 
+  // Settings persistence goes through settings_io.py rather than a raw
+  // FileView: the path is fixed and predictable, so reads/writes are routed
+  // through a helper that refuses to follow a symlink planted there, won't
+  // block on a FIFO planted there, and bounds how much it will read.
+  function loadSettings() {
+    if (settingsReadProc.running) return
+    settingsReadProc.command = ["/usr/bin/python3", root.settingsIoScript, "read", root.settingsPath]
+    settingsReadProc.running = true
+  }
+
+  function saveSettings(jsonText) {
+    if (settingsWriteProc.running) return
+    settingsWriteProc.command = ["/usr/bin/python3", root.settingsIoScript, "write", root.settingsPath, jsonText]
+    settingsWriteProc.running = true
+  }
+
   function startEditingMosque() {
     editingMosque = true
     Qt.callLater(function() {
@@ -101,7 +126,7 @@ Panel {
     root.report = null
     root.errorMessage = ""
     root.fetchedDate = ""
-    settingsFile.setText(JSON.stringify({ mosque: value, fetchedDate: "", report: null }))
+    root.saveSettings(JSON.stringify({ mosque: value, fetchedDate: "", report: null }))
     Qt.callLater(function() { root.refresh(true) })
   }
 
@@ -109,26 +134,53 @@ Panel {
   implicitHeight: button.implicitHeight
 
   onOpenedChanged: if (opened) {
-    settingsFile.reload()
+    root.loadSettings()
     root.refresh()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
-  property FileView settingsFile: FileView {
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/mawaqit-times.json"
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: {
-      var parsed = Model.parseSettingsFile(text())
+  Process {
+    id: settingsReadProc
+    running: false
+    command: []
+    stdout: StdioCollector { id: settingsReadStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      var raw = String(settingsReadStdout.text || "").trim()
+      var result = null
+      try {
+        result = JSON.parse(raw)
+      } catch (e) {
+        result = null
+      }
+      if (!result || !result.ok) {
+        root.configuredMosque = ""
+        root.fetchedDate = ""
+        root.report = null
+        return
+      }
+      var parsed = Model.parseSettingsFile(result.exists ? result.text : "")
       root.configuredMosque = parsed.mosque
       root.fetchedDate = parsed.fetchedDate
       root.report = parsed.report
     }
-    onLoadFailed: {
-      root.configuredMosque = ""
-      root.fetchedDate = ""
-      root.report = null
+  }
+
+  Process {
+    id: settingsWriteProc
+    running: false
+    command: []
+    // Without a stdout collector Quickshell never fully reaps the process,
+    // so `running` gets stuck true after the first write and every later
+    // saveSettings() call silently no-ops on the running-guard.
+    stdout: StdioCollector { id: settingsWriteStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      var result = null
+      try {
+        result = JSON.parse(String(settingsWriteStdout.text || "").trim())
+      } catch (e) {
+        result = null
+      }
+      if (!result || !result.ok) console.warn("mawaqit-times: failed to save settings")
     }
   }
 
@@ -138,7 +190,7 @@ Panel {
   Timer {
     interval: 1500
     running: true
-    onTriggered: settingsFile.reload()
+    onTriggered: root.loadSettings()
   }
 
   Timer {
@@ -161,6 +213,10 @@ Panel {
         root.errorMessage = String(fetchStderr.text || "").trim() || "The prayer-times helper produced no output"
         return
       }
+      if (raw.length > root.maxHelperOutputChars) {
+        root.errorMessage = "The prayer-times helper produced too much output"
+        return
+      }
       var parsed
       try {
         parsed = JSON.parse(raw)
@@ -175,7 +231,7 @@ Panel {
       root.errorMessage = ""
       root.report = parsed
       root.fetchedDate = Model.todayLocalDate()
-      settingsFile.setText(JSON.stringify({
+      root.saveSettings(JSON.stringify({
         mosque: root.configuredMosque,
         fetchedDate: root.fetchedDate,
         report: parsed
