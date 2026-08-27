@@ -1,6 +1,6 @@
 # Mawaqit Prayer Times
 
-An [Omarchy](https://omarchy.org) bar plugin that shows the five daily prayer
+An unofficial [Omarchy](https://omarchy.org) bar plugin that shows the five daily prayer
 times for a mosque of your choosing, pulled from its [mawaqit.net](https://mawaqit.net)
 page. Prayer time lookup runs through a small bundled Python script; the QML
 side only handles display, countdown, and settings.
@@ -8,6 +8,8 @@ side only handles display, countdown, and settings.
 The bar pill shows the next prayer and its time (e.g. `Asr 16:43`). Click it
 to open a panel with all five prayers, sunrise, and Jumu'a, with the next
 prayer highlighted.
+
+![The Preview](preview.png)
 
 ## Install
 
@@ -23,8 +25,8 @@ _Setup > Plugins_.
 Click the bar pill to open the panel, then click "change mosque" (or just
 enter one straight away if none is configured yet) and paste either:
 
-- a mosque slug, e.g. `islamic-center-brooklyn`, or
-- a full mawaqit.net link, e.g. `https://mawaqit.net/en/islamic-center-brooklyn`
+- a mosque slug, e.g. `al-haram-makkah-saudi-arabia`, or
+- a full mawaqit.net link, e.g. `https://mawaqit.net/en/al-haram-makkah-saudi-arabia`
 
 Find your mosque's slug by searching for it at [mawaqit.net](https://mawaqit.net)
 and copying the last part of its URL. Press Enter to save; Escape cancels.
