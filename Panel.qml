@@ -19,6 +19,10 @@ Panel {
   property var report: null
   property string errorMessage: ""
   property bool loading: false
+  // Local calendar date ("YYYY-MM-DD") the current `report` was fetched
+  // on; compared against Model.todayLocalDate() to cap automatic fetches
+  // to once per day.
+  property string fetchedDate: ""
 
   // Bumped every 30s purely so the "next prayer" bindings below re-evaluate
   // between fetches, since nothing else about `report` changes as time passes.
@@ -63,8 +67,12 @@ Panel {
     return n.label + (n.tomorrow ? " tomorrow" : "") + " in " + Model.formatCountdown(n.minutesUntil)
   }
 
-  function refresh() {
+  // `force` bypasses the once-a-day cache (used for manual refreshes and
+  // for a newly configured mosque); otherwise a fetch only happens when
+  // `fetchedDate` isn't today.
+  function refresh(force) {
     if (root.configuredMosque === "" || fetchProc.running) return
+    if (!force && root.fetchedDate === Model.todayLocalDate()) return
     root.loading = true
     fetchProc.command = ["/usr/bin/python3", root.scriptPath, root.configuredMosque]
     fetchProc.running = true
@@ -92,8 +100,9 @@ Panel {
     root.configuredMosque = value
     root.report = null
     root.errorMessage = ""
-    settingsFile.setText(JSON.stringify({ mosque: value }))
-    Qt.callLater(root.refresh)
+    root.fetchedDate = ""
+    settingsFile.setText(JSON.stringify({ mosque: value, fetchedDate: "", report: null }))
+    Qt.callLater(function() { root.refresh(true) })
   }
 
   implicitWidth: button.implicitWidth
@@ -105,19 +114,22 @@ Panel {
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
-  onConfiguredMosqueChanged: {
-    root.report = null
-    root.errorMessage = ""
-    Qt.callLater(root.refresh)
-  }
-
   property FileView settingsFile: FileView {
     path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/mawaqit-times.json"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: root.configuredMosque = Model.parseSettingsFile(text()).mosque
-    onLoadFailed: root.configuredMosque = ""
+    onLoaded: {
+      var parsed = Model.parseSettingsFile(text())
+      root.configuredMosque = parsed.mosque
+      root.fetchedDate = parsed.fetchedDate
+      root.report = parsed.report
+    }
+    onLoadFailed: {
+      root.configuredMosque = ""
+      root.fetchedDate = ""
+      root.report = null
+    }
   }
 
   // The first read can race shell startup, leaving a stored mosque unhonored
@@ -134,13 +146,6 @@ Panel {
     running: true
     repeat: true
     onTriggered: root.tick++
-  }
-
-  Timer {
-    interval: 5 * 60 * 1000
-    running: root.configuredMosque !== ""
-    repeat: true
-    onTriggered: root.refresh()
   }
 
   Process {
@@ -169,6 +174,12 @@ Panel {
       }
       root.errorMessage = ""
       root.report = parsed
+      root.fetchedDate = Model.todayLocalDate()
+      settingsFile.setText(JSON.stringify({
+        mosque: root.configuredMosque,
+        fetchedDate: root.fetchedDate,
+        report: parsed
+      }))
     }
   }
 
@@ -179,7 +190,7 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
-    function refresh(): string { root.refresh(); return "ok" }
+    function refresh(): string { root.refresh(true); return "ok" }
   }
 
   WidgetButton {
@@ -190,7 +201,7 @@ Panel {
     tooltipText: root.barTooltip
 
     onPressed: function(b) {
-      if (b === Qt.MiddleButton) root.refresh()
+      if (b === Qt.MiddleButton) root.refresh(true)
       else root.toggle()
     }
   }

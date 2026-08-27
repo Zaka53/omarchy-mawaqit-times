@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.zaka53.mawaqit-times",
   "name": "Mawaqit Prayer Times",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Zaka53",
   "license": "MIT",
-  "description": "Prayer times for a mosque of your choosing, fetched from mawaqit.net",
+  "description": "View the prayer times for a mosque of your choosing only using the mawaqit.net url or the mosque slug.",
   "kinds": [
     "bar-widget"
   ],

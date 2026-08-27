@@ -4,13 +4,26 @@
 
 function parseSettingsFile(text) {
   var raw = String(text || "").trim()
-  if (raw === "") return { mosque: "" }
+  if (raw === "") return { mosque: "", fetchedDate: "", report: null }
   try {
     var parsed = JSON.parse(raw)
-    return { mosque: typeof parsed.mosque === "string" ? parsed.mosque : "" }
+    return {
+      mosque: typeof parsed.mosque === "string" ? parsed.mosque : "",
+      fetchedDate: typeof parsed.fetchedDate === "string" ? parsed.fetchedDate : "",
+      report: (parsed.report && typeof parsed.report === "object") ? parsed.report : null
+    }
   } catch (e) {
-    return { mosque: "" }
+    return { mosque: "", fetchedDate: "", report: null }
   }
+}
+
+// Local (device) calendar date as "YYYY-MM-DD", used purely as a cache
+// freshness flag for the once-a-day mawaqit.net fetch.
+function todayLocalDate() {
+  var d = new Date()
+  var m = String(d.getMonth() + 1).padStart(2, "0")
+  var day = String(d.getDate()).padStart(2, "0")
+  return d.getFullYear() + "-" + m + "-" + day
 }
 
 function minutesFromHHMM(value) {
