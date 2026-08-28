@@ -119,8 +119,12 @@ Panel {
   }
 
   function commitMosque(text) {
-    var value = String(text || "").trim()
+    var value = Model.validateMosque(String(text || "").trim())
     editingMosque = false
+    if (value === null) {
+      root.errorMessage = "That doesn't look like a valid mosque slug or mawaqit.net link"
+      return
+    }
     if (value === root.configuredMosque) return
     root.configuredMosque = value
     root.report = null
@@ -228,13 +232,20 @@ Panel {
         root.errorMessage = parsed.error || "Could not fetch prayer times"
         return
       }
+      // Validated the same way as a reloaded cache report (Model.parseSettingsFile)
+      // so the file on disk can never hold anything QML wouldn't also accept on load.
+      var validatedReport = Model.validateReport(parsed)
+      if (!validatedReport) {
+        root.errorMessage = "The prayer-times helper returned invalid data"
+        return
+      }
       root.errorMessage = ""
-      root.report = parsed
+      root.report = validatedReport
       root.fetchedDate = Model.todayLocalDate()
       root.saveSettings(JSON.stringify({
         mosque: root.configuredMosque,
         fetchedDate: root.fetchedDate,
-        report: parsed
+        report: validatedReport
       }))
     }
   }
