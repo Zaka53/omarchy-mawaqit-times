@@ -64,7 +64,9 @@ function validateReport(report) {
   if (typeof report.nowLocalMinutes !== "number" || !Number.isInteger(report.nowLocalMinutes)) return null
   if (report.nowLocalMinutes < 0 || report.nowLocalMinutes >= 1440) return null
 
-  if (report.slug !== undefined && !isBoundedPlainText(report.slug, MAX_AUX_LEN)) return null
+  // The slug is derived from the configured mosque value, so it shares that
+  // bound rather than the tighter one used for the timezone.
+  if (report.slug !== undefined && !isBoundedPlainText(report.slug, MAX_MOSQUE_LEN)) return null
   if (report.timezone !== undefined && !isBoundedPlainText(report.timezone, MAX_AUX_LEN)) return null
 
   return report

@@ -158,6 +158,12 @@ describe("validateReport", () => {
     assert.equal(Model.validateReport(makeReport({ slug: "a".repeat(500) })), null);
     assert.equal(Model.validateReport(makeReport({ timezone: "a".repeat(500) })), null);
   });
+
+  test("accepts a slug as long as the mosque value it came from", () => {
+    const slug = "a".repeat(200);
+    assert.equal(Model.validateMosque(slug), slug);
+    assert.notEqual(Model.validateReport(makeReport({ slug: slug })), null);
+  });
 });
 
 describe("parseSettingsFile", () => {

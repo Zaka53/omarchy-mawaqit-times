@@ -42,10 +42,14 @@ def sanitize_display(value, max_len=200):
     would trigger an unprompted network fetch as soon as the panel is drawn).
     Since this data comes from the remote page, not from us, treat it as
     untrusted and never let it look like markup.
+
+    Whitespace runs (including the tabs/newlines Model.js's plain-text check
+    rejects outright) collapse to single spaces, so a legitimate but oddly
+    formatted mosque name doesn't get the whole report thrown away on load.
     """
     text = value if isinstance(value, str) else ""
     text = text.replace("<", "").replace(">", "")
-    return text.strip()[:max_len]
+    return re.sub(r"\s+", " ", text).strip()[:max_len]
 
 
 def mosque_slug(raw):
