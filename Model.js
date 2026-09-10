@@ -2,15 +2,86 @@
 // and the "which prayer is next" arithmetic. Kept separate from the QML so
 // the time math can be reasoned about without the panel's UI state.
 
+// Same bound mawaqit_times.py applies to a mosque page's "name" field via
+// sanitize_display(), reused here so a plain slug and a full mawaqit.net
+// URL both fit comfortably while anything wildly oversized is rejected.
+var MAX_MOSQUE_LEN = 200
+var MOSQUE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._\-\/:?=&%]*$/
+
+var MAX_NAME_LEN = 200
+var MAX_LABEL_LEN = 64
+var MAX_AUX_LEN = 64
+var MIN_VALID_EPOCH_MS = Date.UTC(2020, 0, 1)
+var ONE_DAY_MS = 24 * 60 * 60 * 1000
+
+function isBoundedPlainText(value, maxLen) {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLen && !/[<>\r\n\t]/.test(value)
+}
+
+function isValidTimeString(value) {
+  return typeof value === "string" && /^([01]?\d|2[0-3]):[0-5]\d$/.test(value)
+}
+
+// Returns "" for an empty/unconfigured mosque (a legitimate value), or null
+// if `value` is non-empty but doesn't look like a safe slug/URL. `value`
+// ends up both as a Process argv element and as a URL path component in
+// mawaqit_times.py, so this bounds its length and restricts it to a
+// conservative character set rather than trusting it verbatim.
+function validateMosque(value) {
+  if (typeof value !== "string") return null
+  if (value === "") return ""
+  if (value.length > MAX_MOSQUE_LEN) return null
+  return MOSQUE_PATTERN.test(value) ? value : null
+}
+
+// Strict schema check for a prayer-time report, applied identically to a
+// freshly-fetched report (before it's trusted or persisted) and to a report
+// reloaded from the cached settings file. Any field that doesn't match
+// results in the whole report being rejected (returns null) rather than
+// partially trusting it, since this is the last gate before the data
+// reaches QML (Repeater model counts, Text bindings) unsanitized.
+function validateReport(report) {
+  if (!report || typeof report !== "object") return null
+
+  if (!isBoundedPlainText(report.name, MAX_NAME_LEN)) return null
+
+  if (!Array.isArray(report.labels) || report.labels.length !== 5) return null
+  for (var i = 0; i < report.labels.length; i++) {
+    if (!isBoundedPlainText(report.labels[i], MAX_LABEL_LEN)) return null
+  }
+
+  if (!Array.isArray(report.times) || report.times.length !== 5) return null
+  for (var j = 0; j < report.times.length; j++) {
+    if (!isValidTimeString(report.times[j])) return null
+  }
+
+  if (typeof report.shuruq !== "string" || (report.shuruq !== "" && !isValidTimeString(report.shuruq))) return null
+  if (typeof report.jumua !== "string" || (report.jumua !== "" && !isValidTimeString(report.jumua))) return null
+
+  if (typeof report.fetchedAtEpochMs !== "number" || !isFinite(report.fetchedAtEpochMs)) return null
+  if (report.fetchedAtEpochMs < MIN_VALID_EPOCH_MS || report.fetchedAtEpochMs > Date.now() + ONE_DAY_MS) return null
+
+  if (typeof report.nowLocalMinutes !== "number" || !Number.isInteger(report.nowLocalMinutes)) return null
+  if (report.nowLocalMinutes < 0 || report.nowLocalMinutes >= 1440) return null
+
+  // The slug is derived from the configured mosque value, so it shares that
+  // bound rather than the tighter one used for the timezone.
+  if (report.slug !== undefined && !isBoundedPlainText(report.slug, MAX_MOSQUE_LEN)) return null
+  if (report.timezone !== undefined && !isBoundedPlainText(report.timezone, MAX_AUX_LEN)) return null
+
+  return report
+}
+
 function parseSettingsFile(text) {
   var raw = String(text || "").trim()
   if (raw === "") return { mosque: "", fetchedDate: "", report: null }
   try {
     var parsed = JSON.parse(raw)
+    var mosque = validateMosque(typeof parsed.mosque === "string" ? parsed.mosque : "")
     return {
-      mosque: typeof parsed.mosque === "string" ? parsed.mosque : "",
+      mosque: mosque === null ? "" : mosque,
       fetchedDate: typeof parsed.fetchedDate === "string" ? parsed.fetchedDate : "",
-      report: (parsed.report && typeof parsed.report === "object") ? parsed.report : null
+      report: validateReport(parsed.report)
     }
   } catch (e) {
     return { mosque: "", fetchedDate: "", report: null }
