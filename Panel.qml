@@ -46,6 +46,22 @@ Panel {
   readonly property string settingsPath:
     Quickshell.env("HOME") + "/.local/state/omarchy/settings/mawaqit-times.json"
 
+  // Every helper runs through the same interpreter invocation and a cleared,
+  // fixed environment. The absolute interpreter path alone doesn't constrain
+  // what it imports: PYTHONPATH / PYTHONHOME / PYTHONSTARTUP etc. inherited
+  // from the session, a user site-packages dir, or a module next to the script
+  // could shadow stdlib modules like `json` and run before any of the helper's
+  // own bounds. `-I` (isolated: ignores PYTHON* vars, drops the script dir and
+  // user site from sys.path) and `-S` (no `site` import; the helpers are
+  // stdlib-only) close that at startup, and clearEnvironment + helperEnvironment
+  // on each Process means nothing else from the session leaks in either.
+  readonly property var pythonArgv: ["/usr/bin/python3", "-I", "-S"]
+  readonly property var helperEnvironment: ({
+    "PATH": "/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8"
+  })
+
   // Caps how much of the fetch helper's stdout we'll act on. The helper's
   // own HTTP read is bounded (see mawaqit_times.py), so real output is at
   // most a few KB; this is a defensive backstop, not the primary limit.
@@ -83,7 +99,7 @@ Panel {
     if (root.configuredMosque === "" || fetchProc.running) return
     if (!force && root.fetchedDate === Model.todayLocalDate()) return
     root.loading = true
-    fetchProc.command = ["/usr/bin/python3", root.scriptPath, root.configuredMosque]
+    fetchProc.command = root.pythonArgv.concat([root.scriptPath, root.configuredMosque])
     fetchProc.running = true
   }
 
@@ -93,13 +109,13 @@ Panel {
   // block on a FIFO planted there, and bounds how much it will read.
   function loadSettings() {
     if (settingsReadProc.running) return
-    settingsReadProc.command = ["/usr/bin/python3", root.settingsIoScript, "read", root.settingsPath]
+    settingsReadProc.command = root.pythonArgv.concat([root.settingsIoScript, "read", root.settingsPath])
     settingsReadProc.running = true
   }
 
   function saveSettings(jsonText) {
     if (settingsWriteProc.running) return
-    settingsWriteProc.command = ["/usr/bin/python3", root.settingsIoScript, "write", root.settingsPath, jsonText]
+    settingsWriteProc.command = root.pythonArgv.concat([root.settingsIoScript, "write", root.settingsPath, jsonText])
     settingsWriteProc.running = true
   }
 
@@ -147,6 +163,8 @@ Panel {
     id: settingsReadProc
     running: false
     command: []
+    clearEnvironment: true
+    environment: root.helperEnvironment
     stdout: StdioCollector { id: settingsReadStdout; waitForEnd: true }
     onExited: function(exitCode) {
       var raw = String(settingsReadStdout.text || "").trim()
@@ -173,6 +191,8 @@ Panel {
     id: settingsWriteProc
     running: false
     command: []
+    clearEnvironment: true
+    environment: root.helperEnvironment
     // Without a stdout collector Quickshell never fully reaps the process,
     // so `running` gets stuck true after the first write and every later
     // saveSettings() call silently no-ops on the running-guard.
@@ -208,6 +228,8 @@ Panel {
     id: fetchProc
     running: false
     command: []
+    clearEnvironment: true
+    environment: root.helperEnvironment
     stdout: StdioCollector { id: fetchStdout; waitForEnd: true }
     stderr: StdioCollector { id: fetchStderr; waitForEnd: true }
     onExited: function(exitCode) {
