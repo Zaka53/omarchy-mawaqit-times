@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head><title>Test Mosque</title></head>
+<body>
+<script>
+  // Hand-written stand-in for a mawaqit.net mosque page: only the parts
+  // mawaqit_times.py looks at. Strings deliberately contain braces, escaped
+  // quotes and markup so the brace-matching extractor and the display
+  // sanitizer are both exercised.
+  var somethingElse = { "notIt": true };
+  let confData = {"name": "<img src=x>Test \"Mosque\" {Central}\n\tHall", "timezone": "Europe/Berlin", "times": ["05:18", "13:27", "16:50", "19:40", "21:24"], "shuruq": "07:11", "jumua": "<b>14:00</b>", "extra": {"nested": "}"}};
+  var afterwards = { "alsoNotIt": 1 };
+</script>
+</body>
+</html>
