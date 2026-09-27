@@ -259,6 +259,7 @@ describe("mawaqit_times.py", () => {
     assert.equal(out.timezone, "Europe/Berlin");
     assert.deepEqual(out.labels, ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"]);
     assert.deepEqual(out.times, ["05:18", "13:27", "16:50", "19:40", "21:24"]);
+    assert.deepEqual(out.iqama, ["", "", "", "", ""]);
     assert.equal(out.shuruq, "07:11");
     assert.equal(out.jumua, "b14:00/b");
     assert.ok(Number.isInteger(out.fetchedAtEpochMs));
@@ -359,6 +360,70 @@ describe("mawaqit_times.py", () => {
       `{"name": "${"n".repeat(500)}", "times": ["${"9".repeat(50)}", "2", "3", "4", "5"]}`), "m");
     assert.equal(out.name.length, 200);
     assert.equal(out.times[0].length, 16);
+  });
+
+  // The helper resolves "today" in the mosque's timezone, so these pages pin
+  // it to UTC and derive the day/month from the same clock the helper will.
+  const utcNow = () => { const d = new Date(); return { month: d.getUTCMonth() + 1, day: d.getUTCDate() }; };
+
+  // Every day of every month maps to `entry`, so the test is date-independent.
+  function everyDay(entry) {
+    const month = {};
+    for (let d = 1; d <= 31; d++) month[String(d)] = entry;
+    return JSON.stringify(new Array(12).fill(month));
+  }
+
+  function iqamaPage(calendar, times = goodTimes) {
+    return pageWith(`{"timezone": "UTC", "times": ${times}, "iqamaCalendar": ${calendar}}`);
+  }
+
+  test("iqama offsets are resolved against today's prayer times", () => {
+    const { out } = fetchWith(iqamaPage(everyDay(["06:23", "+15", "+15", "+5", "+2"])), "m");
+    assert.equal(out.ok, true);
+    assert.deepEqual(out.iqama, ["06:23", "13:15", "16:15", "19:05", "21:02"]);
+  });
+
+  test("an iqama offset past midnight wraps instead of overflowing", () => {
+    const { out } = fetchWith(
+      iqamaPage(everyDay(["+5", "+5", "+5", "+5", "+20"]), '["05:00", "13:00", "16:00", "19:00", "23:50"]'), "m");
+    assert.deepEqual(out.iqama, ["05:05", "13:05", "16:05", "19:05", "00:10"]);
+  });
+
+  test("today's entry is the one picked out of the calendar", () => {
+    const { month, day } = utcNow();
+    const months = new Array(12).fill(null).map((_, i) => {
+      const entry = {};
+      for (let d = 1; d <= 31; d++) entry[String(d)] = ["08:00", "+2", "+2", "+2", "+2"];
+      if (i + 1 === month) entry[String(day)] = ["07:00", "+1", "+1", "+1", "+1"];
+      return entry;
+    });
+    const { out } = fetchWith(iqamaPage(JSON.stringify(months)), "m");
+    assert.deepEqual(out.iqama, ["07:00", "13:01", "16:01", "19:01", "21:01"]);
+  });
+
+  test("a mosque with no iqama calendar reports five blanks", () => {
+    assert.deepEqual(fetchWith(pageWith(`{"times": ${goodTimes}}`), "m").out.iqama, ["", "", "", "", ""]);
+  });
+
+  test("a malformed iqama calendar reports five blanks, not an error", () => {
+    for (const calendar of ['"nope"', "null", "[]", "[1,2,3,4,5,6,7,8,9,10,11,12]",
+      everyDay(["06:23", "+15"]), everyDay("not-a-list")]) {
+      const { out } = fetchWith(iqamaPage(calendar), "m");
+      assert.equal(out.ok, true, calendar);
+      assert.deepEqual(out.iqama, ["", "", "", "", ""], calendar);
+    }
+  });
+
+  test("unusable iqama entries blank only their own prayer", () => {
+    const { out } = fetchWith(iqamaPage(everyDay(["25:00", "+15", null, "++5", "+2"])), "m");
+    assert.deepEqual(out.iqama, ["", "13:15", "", "", "21:02"]);
+  });
+
+  test("an iqama offset against an unusable prayer time is blank", () => {
+    const { out } = fetchWith(
+      iqamaPage(everyDay(["+5", "+15", "+15", "+5", "+2"]), '["<b>05:00</b>", "13:00", "16:00", "19:00", "21:00"]'), "m");
+    assert.equal(out.times[0], "b05:00/b");
+    assert.equal(out.iqama[0], "");
   });
 
   test("no argument or a blank argument is a usage error", () => {

@@ -425,6 +425,7 @@ Panel {
               width: parent.width
               label: modelData
               time: root.report.times[index]
+              iqama: Model.iqamaFor(root.report, index)
               highlighted: root.next !== null && root.next.index === index
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -461,19 +462,22 @@ Panel {
     }
   }
 
-  // One prayer/sunrise/jumu'a row: label on the left, time on the right.
-  // `highlighted` marks the next upcoming prayer; `dim` marks secondary rows
-  // (sunrise, jumu'a) that aren't part of the five daily prayers.
+  // One prayer/sunrise/jumu'a row: label on the left, the adhan time on the
+  // right, and — for the five daily prayers — the mosque's iqama time greyed
+  // out just to its left. `highlighted` marks the next upcoming prayer; `dim`
+  // marks secondary rows (sunrise, jumu'a) that aren't part of the five daily
+  // prayers and carry no iqama time.
   component PrayerRow: Item {
     id: prayerRow
     property string label: ""
     property string time: ""
+    property string iqama: ""
     property bool highlighted: false
     property bool dim: false
     property color foreground: Color.foreground
     property string fontFamily: Style.font.family
 
-    implicitHeight: Math.max(labelText.implicitHeight, timeText.implicitHeight)
+    implicitHeight: Math.max(labelText.implicitHeight, timeText.implicitHeight, iqamaText.implicitHeight)
 
     Text {
       id: labelText
@@ -484,6 +488,21 @@ Panel {
       font.family: prayerRow.fontFamily
       font.pixelSize: prayerRow.dim ? Style.font.bodySmall : Style.font.body
       font.bold: prayerRow.highlighted
+    }
+
+    // Stays dimmed even on the highlighted row: the iqama time is secondary
+    // to the adhan time the row is really about. Same grey as the dimmed
+    // sunrise/jumu'a rows, so all the secondary times read as one tier.
+    Text {
+      id: iqamaText
+      visible: prayerRow.iqama !== ""
+      anchors.right: timeText.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      text: prayerRow.iqama
+      color: Qt.darker(prayerRow.foreground, 1.5)
+      font.family: prayerRow.fontFamily
+      font.pixelSize: Style.font.bodySmall
     }
 
     Text {

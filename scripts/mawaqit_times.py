@@ -6,8 +6,8 @@ Usage: mawaqit_times.py <mosque-slug-or-url>
 Prints a single JSON object to stdout and always exits 0 so the caller
 (the Quickshell Process running this script) can rely on stdout alone:
   {"ok": true, "name": ..., "timezone": ..., "labels": [...], "times": [...],
-   "shuruq": "06:16", "jumua": "13:00", "fetchedAtEpochMs": 1700000000000,
-   "nowLocalMinutes": 275}
+   "iqama": [...], "shuruq": "06:16", "jumua": "13:00",
+   "fetchedAtEpochMs": 1700000000000, "nowLocalMinutes": 275}
   {"ok": false, "error": "..."}
 """
 
@@ -50,6 +50,54 @@ def sanitize_display(value, max_len=200):
     text = value if isinstance(value, str) else ""
     text = text.replace("<", "").replace(">", "")
     return re.sub(r"\s+", " ", text).strip()[:max_len]
+
+
+def parse_hhmm(value):
+    """Minutes since midnight for an "HH:MM" string, or None if it isn't one."""
+    match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(value).strip())
+    if not match:
+        return None
+    return int(match.group(1)) * 60 + int(match.group(2))
+
+
+def format_hhmm(minutes):
+    minutes %= 24 * 60
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def iqama_times(calendar, times, now_dt):
+    """Resolve today's five iqama times out of confData's iqamaCalendar.
+
+    iqamaCalendar is a 12-element list (January first); each entry maps a
+    day-of-month string ("27") to five values, one per prayer, which are
+    either an absolute "HH:MM" or a "+N" offset in minutes from that
+    prayer's adhan time (a mosque typically fixes Fajr and offsets the
+    rest). Anything missing or unparseable yields "" for that prayer, so a
+    mosque that publishes no iqama calendar simply gets five blanks rather
+    than making the whole report unusable.
+    """
+    blank = ["", "", "", "", ""]
+    if not isinstance(calendar, list) or len(calendar) < now_dt.month:
+        return blank
+    month = calendar[now_dt.month - 1]
+    if not isinstance(month, dict):
+        return blank
+    entry = month.get(str(now_dt.day))
+    if not isinstance(entry, list) or len(entry) != 5:
+        return blank
+
+    resolved = []
+    for i, value in enumerate(entry):
+        text = value.strip() if isinstance(value, str) else ""
+        absolute = parse_hhmm(text)
+        if absolute is not None:
+            resolved.append(format_hhmm(absolute))
+            continue
+        offset = re.fullmatch(r"([+-]?\d{1,3})", text)
+        adhan = parse_hhmm(times[i]) if i < len(times) else None
+        resolved.append("" if offset is None or adhan is None
+                        else format_hhmm(adhan + int(offset.group(1))))
+    return resolved
 
 
 def mosque_slug(raw):
@@ -137,13 +185,16 @@ def main():
         now_dt = datetime.now(ZoneInfo(timezone))
     now_local_minutes = now_dt.hour * 60 + now_dt.minute
 
+    clean_times = [sanitize_display(t, 16) for t in times]
+
     print(json.dumps({
         "ok": True,
         "slug": slug,
         "name": sanitize_display(data.get("name") or slug),
         "timezone": timezone,
         "labels": LABELS,
-        "times": [sanitize_display(t, 16) for t in times],
+        "times": clean_times,
+        "iqama": iqama_times(data.get("iqamaCalendar"), clean_times, now_dt),
         "shuruq": sanitize_display(data.get("shuruq") or "", 16),
         "jumua": sanitize_display(data.get("jumua") or "", 16),
         "fetchedAtEpochMs": int(now_dt.timestamp() * 1000),

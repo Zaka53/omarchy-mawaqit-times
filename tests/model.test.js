@@ -22,6 +22,7 @@ function loadModel() {
     "minutesFromHHMM",
     "currentDayMinutes",
     "nextPrayer",
+    "iqamaFor",
     "formatCountdown"
   ];
   const body = src + "\n;return {" + exportedNames.map(n => n).join(",") + "};";
@@ -38,6 +39,7 @@ function makeReport(overrides) {
     timezone: "America/New_York",
     labels: ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"],
     times: ["05:12", "13:05", "16:45", "19:58", "21:20"],
+    iqama: ["05:27", "13:20", "17:00", "20:03", "21:22"],
     shuruq: "06:16",
     jumua: "13:00",
     fetchedAtEpochMs: Date.now(),
@@ -159,6 +161,28 @@ describe("validateReport", () => {
     assert.equal(Model.validateReport(makeReport({ timezone: "a".repeat(500) })), null);
   });
 
+  test("accepts a report without an iqama field (cached before iqama support)", () => {
+    const report = makeReport();
+    delete report.iqama;
+    assert.notEqual(Model.validateReport(report), null);
+  });
+
+  test("accepts five blank iqama times (mosque publishes no iqama calendar)", () => {
+    assert.notEqual(Model.validateReport(makeReport({ iqama: ["", "", "", "", ""] })), null);
+  });
+
+  test("rejects an iqama array of the wrong length or shape", () => {
+    assert.equal(Model.validateReport(makeReport({ iqama: ["05:27", "13:20"] })), null);
+    assert.equal(Model.validateReport(makeReport({ iqama: "05:27" })), null);
+    assert.equal(Model.validateReport(makeReport({ iqama: [1, 2, 3, 4, 5] })), null);
+  });
+
+  test("rejects an iqama entry that isn't a plain time", () => {
+    assert.equal(Model.validateReport(makeReport({ iqama: ["+15", "13:20", "17:00", "20:03", "21:22"] })), null);
+    assert.equal(Model.validateReport(makeReport({ iqama: ["<b>05:27</b>", "13:20", "17:00", "20:03", "21:22"] })), null);
+    assert.equal(Model.validateReport(makeReport({ iqama: ["25:00", "13:20", "17:00", "20:03", "21:22"] })), null);
+  });
+
   test("accepts a slug as long as the mosque value it came from", () => {
     const slug = "a".repeat(200);
     assert.equal(Model.validateMosque(slug), slug);
@@ -257,6 +281,25 @@ describe("nextPrayer", () => {
   test("returns null for a report with no usable times", () => {
     assert.equal(Model.nextPrayer(null, Date.now()), null);
     assert.equal(Model.nextPrayer(makeReport({ times: [] }), Date.now()), null);
+  });
+});
+
+describe("iqamaFor", () => {
+  test("returns the iqama time for a prayer index", () => {
+    assert.equal(Model.iqamaFor(makeReport(), 0), "05:27");
+    assert.equal(Model.iqamaFor(makeReport(), 4), "21:22");
+  });
+
+  test("returns \"\" for a report with no iqama field, and for a blank entry", () => {
+    const report = makeReport();
+    delete report.iqama;
+    assert.equal(Model.iqamaFor(report, 0), "");
+    assert.equal(Model.iqamaFor(makeReport({ iqama: ["", "", "", "", ""] }), 2), "");
+  });
+
+  test("returns \"\" rather than throwing on a missing report or index", () => {
+    assert.equal(Model.iqamaFor(null, 0), "");
+    assert.equal(Model.iqamaFor(makeReport(), 9), "");
   });
 });
 
