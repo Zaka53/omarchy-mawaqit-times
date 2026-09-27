@@ -55,6 +55,18 @@ function validateReport(report) {
     if (!isValidTimeString(report.times[j])) return null
   }
 
+  // Optional: a report cached before iqama support existed simply has no
+  // `iqama` field, and a mosque that publishes no iqama calendar sends five
+  // empty strings, so both stay valid and just render without iqama times.
+  if (report.iqama !== undefined) {
+    if (!Array.isArray(report.iqama) || report.iqama.length !== 5) return null
+    for (var k = 0; k < report.iqama.length; k++) {
+      var iqama = report.iqama[k]
+      if (typeof iqama !== "string") return null
+      if (iqama !== "" && !isValidTimeString(iqama)) return null
+    }
+  }
+
   if (typeof report.shuruq !== "string" || (report.shuruq !== "" && !isValidTimeString(report.shuruq))) return null
   if (typeof report.jumua !== "string" || (report.jumua !== "" && !isValidTimeString(report.jumua))) return null
 
@@ -130,6 +142,15 @@ function nextPrayer(report, nowMs) {
   var fajr = minutesFromHHMM(report.times[0])
   if (isNaN(fajr)) return null
   return { index: 0, label: report.labels[0], time: report.times[0], minutesUntil: (1440 - dayMinutes) + fajr, tomorrow: true }
+}
+
+// Iqama time for prayer `index`, or "" when the report predates iqama
+// support or the mosque publishes no value for that prayer. Keeps the QML
+// binding from having to guard the field's absence itself.
+function iqamaFor(report, index) {
+  if (!report || !Array.isArray(report.iqama)) return ""
+  var value = report.iqama[index]
+  return typeof value === "string" ? value : ""
 }
 
 function formatCountdown(minutesUntil) {
