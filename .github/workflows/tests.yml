@@ -31,4 +31,5 @@ jobs:
         run: /usr/bin/python3 --version
 
       - name: Run tests
-        run: node --test tests/
+        # Files listed explicitly: Node 22 doesn't accept a directory here.
+        run: node --test tests/*.test.js
