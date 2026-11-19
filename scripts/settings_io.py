@@ -12,7 +12,13 @@ opening it.
 
 Usage:
   settings_io.py read <path>
-  settings_io.py write <path> <json-text>
+  settings_io.py write <path>      (content: one line on stdin)
+
+The content to write comes in on stdin, terminated by a newline, rather than
+as an argument: a process's argv is readable by every local user through
+/proc/<pid>/cmdline and ps, and the settings hold the user's mosques. The
+caller sends compact JSON (JSON.stringify output), which never contains a
+raw newline, so the first line is the whole document.
 
 Prints a single JSON object to stdout and always exits 0, mirroring
 mawaqit_times.py, so the caller can rely on stdout alone.
@@ -66,10 +72,17 @@ def do_read(path):
     print(json.dumps({"ok": True, "exists": True, "text": text}))
 
 
-def do_write(path, content):
-    raw = content.encode("utf-8")
-    if len(raw) > MAX_BYTES:
-        fail("settings content is too large")
+def read_content_line():
+    """The settings document from stdin: one newline-terminated line, at most
+    MAX_BYTES long. Bounded the same way the file read is, and a missing
+    newline (truncated or oversized input) is an error, not a partial write."""
+    line = sys.stdin.buffer.readline(MAX_BYTES + 1)
+    if not line.endswith(b"\n"):
+        fail("settings content is too large" if len(line) > MAX_BYTES else "settings content was incomplete")
+    return line[:-1]
+
+
+def do_write(path, raw):
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_path = f"{path}.tmp{os.getpid()}"
@@ -90,15 +103,17 @@ def do_write(path, content):
 
 def main():
     if len(sys.argv) < 3:
-        fail("Usage: settings_io.py <read|write> <path> [content]")
+        fail("Usage: settings_io.py <read|write> <path>")
 
     action, path = sys.argv[1], sys.argv[2]
     if action == "read":
+        if len(sys.argv) != 3:
+            fail("read takes only <path>")
         do_read(path)
     elif action == "write":
-        if len(sys.argv) != 4:
-            fail("write requires <path> <content>")
-        do_write(path, sys.argv[3])
+        if len(sys.argv) != 3:
+            fail("write takes only <path>; the content comes on stdin")
+        do_write(path, read_content_line())
     else:
         fail(f"Unknown action '{action}'")
 

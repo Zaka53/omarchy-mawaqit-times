@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Fetch today's prayer times for a mosque from mawaqit.net.
 
-Usage: mawaqit_times.py <mosque-slug-or-url>
+Usage: mawaqit_times.py      (mosque slug or URL: one line on stdin)
+
+The mosque comes in on stdin rather than as an argument: a process's argv is
+readable by every local user through /proc/<pid>/cmdline and ps, and which
+mosque someone follows says roughly where they live.
 
 Prints a single JSON object to stdout and always exits 0 so the caller
 (the Quickshell Process running this script) can rely on stdout alone:
@@ -13,6 +17,7 @@ Prints a single JSON object to stdout and always exits 0 so the caller
 
 import json
 import re
+import signal
 import sys
 import urllib.error
 import urllib.parse
@@ -27,7 +32,21 @@ USER_AGENT = (
 
 LABELS = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"]
 
+MAX_INPUT_BYTES = 4096  # the mosque value is capped at 200 chars by Model.validateMosque
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # a mosque page is a few hundred KB; 5 MiB is generous
+
+# Wall-clock limit for the whole request. The urlopen timeout only bounds
+# each single socket operation, so a server dripping a byte every few
+# seconds could otherwise keep the helper (and the panel's "loading" state)
+# alive for hours. Panel.qml additionally kills the process after a longer
+# watchdog interval, as a backstop for anything a signal can't interrupt.
+FETCH_DEADLINE_SECONDS = 30
+
+# Invisible characters that can reorder or hide the surrounding text:
+# C0/C1 controls, zero-width space, LRM/RLM, the bidi embedding/override/
+# isolate controls, word joiner and BOM. Same set Model.js rejects
+# (UNSAFE_TEXT); ZWNJ/ZWJ stay, since some scripts need them in words.
+INVISIBLE_CHARS = re.compile("[\x00-\x1f\x7f-\x9f\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]")
 
 # The only hosts a request may ever reach, over HTTPS only. Requests start at
 # https://mawaqit.net/...; this also bounds where a redirect may lead.
@@ -52,13 +71,16 @@ def sanitize_display(value, max_len=200):
     Since this data comes from the remote page, not from us, treat it as
     untrusted and never let it look like markup.
 
-    Whitespace runs (including the tabs/newlines Model.js's plain-text check
-    rejects outright) collapse to single spaces, so a legitimate but oddly
-    formatted mosque name doesn't get the whole report thrown away on load.
+    Whitespace runs (including the tabs/newlines and U+2028/U+2029 that
+    Model.js's plain-text check rejects outright) collapse to single spaces,
+    and the remaining invisible control/bidi characters are removed, so a
+    legitimate but oddly formatted mosque name doesn't get the whole report
+    thrown away on load.
     """
     text = value if isinstance(value, str) else ""
     text = text.replace("<", "").replace(">", "")
-    return re.sub(r"\s+", " ", text).strip()[:max_len]
+    text = INVISIBLE_CHARS.sub("", re.sub(r"\s+", " ", text))
+    return re.sub(r" {2,}", " ", text).strip()[:max_len]
 
 
 def parse_hhmm(value):
@@ -168,14 +190,32 @@ def open_url(request, timeout):
     return _opener.open(request, timeout=timeout)
 
 
+class FetchDeadline(Exception):
+    """Raised by the SIGALRM handler once FETCH_DEADLINE_SECONDS have passed."""
+
+
+def _on_deadline(signum, frame):
+    raise FetchDeadline()
+
+
 def fetch(slug):
     url = f"https://mawaqit.net/en/{slug}"
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    # SIGALRM interrupts the blocking connect/recv calls, so the deadline
+    # covers the whole exchange: connecting, a dripped header block, and a
+    # dripped body alike. The alarm is cleared before anything else runs.
+    signal.signal(signal.SIGALRM, _on_deadline)
     try:
-        with open_url(request, timeout=10) as response:
-            # Bounded read: .read(n) fills up to n bytes and stops, so a
-            # hostile or misbehaving endpoint can't force unbounded memory use.
-            body = response.read(MAX_RESPONSE_BYTES + 1)
+        signal.alarm(FETCH_DEADLINE_SECONDS)
+        try:
+            with open_url(request, timeout=10) as response:
+                # Bounded read: .read(n) fills up to n bytes and stops, so a
+                # hostile or misbehaving endpoint can't force unbounded memory use.
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+        finally:
+            signal.alarm(0)
+    except FetchDeadline:
+        fail("mawaqit.net took too long to respond")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             fail(f"No mosque found for '{slug}'")
@@ -188,11 +228,26 @@ def fetch(slug):
     return body.decode("utf-8", "replace")
 
 
-def main():
-    if len(sys.argv) != 2 or not sys.argv[1].strip():
-        fail("Usage: mawaqit_times.py <mosque-slug-or-url>")
+USAGE = "Usage: mawaqit_times.py, with the mosque slug or link as one line on stdin"
 
-    slug = mosque_slug(sys.argv[1])
+
+def read_mosque():
+    """The mosque value from stdin: the first line, bounded like every other
+    input this helper reads."""
+    line = sys.stdin.buffer.readline(MAX_INPUT_BYTES + 1)
+    if len(line) > MAX_INPUT_BYTES:
+        fail("That doesn't look like a mawaqit.net mosque slug or link")
+    return line.decode("utf-8", "replace").strip()
+
+
+def main():
+    if len(sys.argv) != 1:
+        fail(USAGE)
+    mosque = read_mosque()
+    if not mosque:
+        fail(USAGE)
+
+    slug = mosque_slug(mosque)
     if not SLUG_PATTERN.fullmatch(slug):
         fail("That doesn't look like a mawaqit.net mosque slug or link")
     html = fetch(slug)

@@ -14,8 +14,18 @@ var MAX_AUX_LEN = 64
 var MIN_VALID_EPOCH_MS = Date.UTC(2020, 0, 1)
 var ONE_DAY_MS = 24 * 60 * 60 * 1000
 
+// Characters no displayed field may contain: markup-capable angle brackets,
+// C0/C1 control characters (incl. CR/LF/TAB/NUL), the Unicode line and
+// paragraph separators (which break a line even in Text.PlainText), and the
+// invisible bidi-control / zero-width characters that can reorder or hide
+// the surrounding text (e.g. U+202E RIGHT-TO-LEFT OVERRIDE). ZWNJ/ZWJ
+// (U+200C/U+200D) stay allowed, since Persian and other scripts use them
+// in ordinary words. mawaqit_times.py strips the same set from fresh data
+// (see sanitize_display), so only a planted cache can trip this.
+var UNSAFE_TEXT = /[<>\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/
+
 function isBoundedPlainText(value, maxLen) {
-  return typeof value === "string" && value.length > 0 && value.length <= maxLen && !/[<>\r\n\t]/.test(value)
+  return typeof value === "string" && value.length > 0 && value.length <= maxLen && !UNSAFE_TEXT.test(value)
 }
 
 function isValidTimeString(value) {
@@ -40,6 +50,11 @@ function validateMosque(value) {
 // results in the whole report being rejected (returns null) rather than
 // partially trusting it, since this is the last gate before the data
 // reaches QML (Repeater model counts, Text bindings) unsanitized.
+//
+// On success it returns a new object holding only the known fields (arrays
+// copied too), never the input itself: anything else the input carried
+// (the helper's "ok" flag, or arbitrary extra keys in a planted cache) is
+// dropped here instead of being kept in memory and written back to disk.
 function validateReport(report) {
   if (!report || typeof report !== "object") return null
 
@@ -81,7 +96,25 @@ function validateReport(report) {
   if (report.slug !== undefined && !isBoundedPlainText(report.slug, MAX_MOSQUE_LEN)) return null
   if (report.timezone !== undefined && !isBoundedPlainText(report.timezone, MAX_AUX_LEN)) return null
 
-  return report
+  var clean = {
+    name: report.name,
+    labels: report.labels.slice(),
+    times: report.times.slice(),
+    shuruq: report.shuruq,
+    jumua: report.jumua,
+    fetchedAtEpochMs: report.fetchedAtEpochMs,
+    nowLocalMinutes: report.nowLocalMinutes
+  }
+  if (report.iqama !== undefined) clean.iqama = report.iqama.slice()
+  if (report.slug !== undefined) clean.slug = report.slug
+  if (report.timezone !== undefined) clean.timezone = report.timezone
+  return clean
+}
+
+// The cache-freshness date persisted next to the report: "YYYY-MM-DD" (the
+// format todayLocalDate() writes), or "" for anything else.
+function validateFetchedDate(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ""
 }
 
 // ---- Saved mosques: a short list of { mosque, name } entries the user can
@@ -169,11 +202,16 @@ function parseSettingsFile(text) {
   if (raw === "") return { mosque: "", fetchedDate: "", report: null, saved: [] }
   try {
     var parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object")
     var mosque = validateMosque(typeof parsed.mosque === "string" ? parsed.mosque : "")
+    var report = validateReport(parsed.report)
     return {
       mosque: mosque === null ? "" : mosque,
-      fetchedDate: typeof parsed.fetchedDate === "string" ? parsed.fetchedDate : "",
-      report: validateReport(parsed.report),
+      // A rejected report also drops its fetch date, so the once-a-day
+      // cache doesn't keep the panel empty until tomorrow: the next
+      // refresh() sees no fresh data and fetches again.
+      fetchedDate: report ? validateFetchedDate(parsed.fetchedDate) : "",
+      report: report,
       saved: validateSavedMosques(parsed.saved)
     }
   } catch (e) {
@@ -253,7 +291,8 @@ var MAX_MESSAGE_LEN = 300
 // a string becomes "", so a caller can fall back to its own wording.
 function displayMessage(value) {
   if (typeof value !== "string") return ""
-  var text = value.replace(/[<>]/g, "").replace(/[\s\u0000-\u001f\u007f]+/g, " ").trim()
+  var text = value.replace(/[<>\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g, "")
+    .replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim()
   return text.length > MAX_MESSAGE_LEN ? text.slice(0, MAX_MESSAGE_LEN - 1) + "…" : text
 }
 

@@ -78,3 +78,38 @@ test("error messages are fixed wording or sanitized before display", () => {
   }
   assert.doesNotMatch(src, /errorMessage = [^\n]*fetchStderr/);
 });
+
+test("settings are written through stdin, never as an argument", () => {
+  // argv is world-readable via /proc/<pid>/cmdline; the document (the
+  // user's mosques) must only travel over the helper's stdin.
+  const assign = src.match(/settingsWriteProc\.command = (.*)/);
+  assert.ok(assign);
+  assert.equal(assign[1], 'root.pythonArgv.concat([root.settingsIoScript, "write", root.settingsPath])');
+  const block = processBlocks().find((b) => b.includes("id: settingsWriteProc"));
+  assert.match(block, /^    stdinEnabled: true$/m);
+  assert.match(block, /write\(root\.settingsWritePayload \+ "\\n"\)/);
+});
+
+test("a hung fetch is killed by a watchdog", () => {
+  const timer = src.match(/Timer \{\n    interval: root\.fetchWatchdogMs\n    running: fetchProc\.running\n[\s\S]*?fetchProc\.running = false/);
+  assert.ok(timer, "watchdog Timer bound to fetchProc.running stops the process");
+  const ms = Number(src.match(/fetchWatchdogMs: (\d+)/)[1]);
+  const helperDeadline = Number(fs.readFileSync(path.join(__dirname, "..", "scripts", "mawaqit_times.py"), "utf8")
+    .match(/^FETCH_DEADLINE_SECONDS = (\d+)$/m)[1]);
+  assert.ok(ms > helperDeadline * 1000, "the watchdog only backs up the helper's own deadline");
+});
+
+test("both helper outputs are size-capped before JSON.parse", () => {
+  assert.match(src, /raw\.length > root\.maxHelperOutputChars/);
+  assert.match(src, /raw\.length <= root\.maxSettingsOutputChars/);
+});
+
+test("the mosque is sent to the fetch helper through stdin, never as an argument", () => {
+  const assign = src.match(/fetchProc\.command = (.*)/);
+  assert.ok(assign);
+  assert.equal(assign[1], "root.pythonArgv.concat([root.scriptPath])");
+  const block = processBlocks().find((b) => b.includes("id: fetchProc"));
+  assert.match(block, /^    stdinEnabled: true$/m);
+  assert.match(block, /write\(root\.fetchPayload \+ "\\n"\)/);
+  assert.match(src, /root\.fetchPayload = root\.configuredMosque/);
+});
