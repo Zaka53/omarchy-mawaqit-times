@@ -126,22 +126,33 @@ function currentDayMinutes(report, nowMs) {
   return minutes < 0 ? minutes + 1440 : minutes
 }
 
+// Display label for the shuruq (sunrise) time, shared by the panel row and
+// the "next" countdown so both name it the same way.
+var SHURUQ_LABEL = "Shuruk"
+
 // Returns null when the report has no usable times, otherwise
-// { index, label, time, minutesUntil, tomorrow }.
+// { index, label, time, minutesUntil, tomorrow, shuruq }. Shuruq counts as
+// a step in the day's sequence (Fajr, Shuruk, Dhuhr, ...) even though it
+// isn't a prayer: when it's the next upcoming time it's returned with
+// `shuruq: true` and `index: -1`, since it has no slot in report.times.
 function nextPrayer(report, nowMs) {
   if (!report || !Array.isArray(report.times) || report.times.length !== 5) return null
 
   var dayMinutes = currentDayMinutes(report, nowMs)
+  var shuruq = minutesFromHHMM(report.shuruq)
   for (var i = 0; i < report.times.length; i++) {
     var minutes = minutesFromHHMM(report.times[i])
     if (!isNaN(minutes) && minutes > dayMinutes) {
-      return { index: i, label: report.labels[i], time: report.times[i], minutesUntil: minutes - dayMinutes, tomorrow: false }
+      if (!isNaN(shuruq) && shuruq > dayMinutes && shuruq < minutes) {
+        return { index: -1, label: SHURUQ_LABEL, time: report.shuruq, minutesUntil: shuruq - dayMinutes, tomorrow: false, shuruq: true }
+      }
+      return { index: i, label: report.labels[i], time: report.times[i], minutesUntil: minutes - dayMinutes, tomorrow: false, shuruq: false }
     }
   }
 
   var fajr = minutesFromHHMM(report.times[0])
   if (isNaN(fajr)) return null
-  return { index: 0, label: report.labels[0], time: report.times[0], minutesUntil: (1440 - dayMinutes) + fajr, tomorrow: true }
+  return { index: 0, label: report.labels[0], time: report.times[0], minutesUntil: (1440 - dayMinutes) + fajr, tomorrow: true, shuruq: false }
 }
 
 // Iqama time for prayer `index`, or "" when the report predates iqama

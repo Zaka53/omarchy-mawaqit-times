@@ -22,6 +22,7 @@ function loadModel() {
     "minutesFromHHMM",
     "currentDayMinutes",
     "nextPrayer",
+    "SHURUQ_LABEL",
     "iqamaFor",
     "formatCountdown"
   ];
@@ -267,6 +268,35 @@ describe("nextPrayer", () => {
     assert.equal(result.index, 0);
     assert.equal(result.label, "Fajr");
     assert.equal(result.tomorrow, false);
+  });
+
+  test("returns Shuruk between Fajr and sunrise", () => {
+    const fetchedAt = new Date("2026-08-28T00:00:00Z").getTime();
+    const report = makeReport({ fetchedAtEpochMs: fetchedAt, nowLocalMinutes: 340 }); // 05:40, after Fajr, before Shuruk 06:16
+    const result = Model.nextPrayer(report, fetchedAt);
+    assert.equal(result.shuruq, true);
+    assert.equal(result.index, -1);
+    assert.equal(result.label, Model.SHURUQ_LABEL);
+    assert.equal(result.time, "06:16");
+    assert.equal(result.minutesUntil, 36);
+    assert.equal(result.tomorrow, false);
+  });
+
+  test("returns Dhuhr once sunrise has passed", () => {
+    const fetchedAt = new Date("2026-08-28T00:00:00Z").getTime();
+    const report = makeReport({ fetchedAtEpochMs: fetchedAt, nowLocalMinutes: 400 }); // 06:40
+    const result = Model.nextPrayer(report, fetchedAt);
+    assert.equal(result.shuruq, false);
+    assert.equal(result.index, 1);
+    assert.equal(result.label, "Dhuhr");
+  });
+
+  test("skips Shuruk when the report has no shuruq time", () => {
+    const fetchedAt = new Date("2026-08-28T00:00:00Z").getTime();
+    const report = makeReport({ fetchedAtEpochMs: fetchedAt, nowLocalMinutes: 340, shuruq: "" });
+    const result = Model.nextPrayer(report, fetchedAt);
+    assert.equal(result.index, 1);
+    assert.equal(result.label, "Dhuhr");
   });
 
   test("wraps to tomorrow's Fajr when every prayer today has passed", () => {

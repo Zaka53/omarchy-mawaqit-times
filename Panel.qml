@@ -441,8 +441,9 @@ Panel {
           PrayerRow {
             visible: root.report && root.report.shuruq !== ""
             width: parent.width
-            label: "Shuruk"
+            label: Model.SHURUQ_LABEL
             time: root.report ? root.report.shuruq : ""
+            highlighted: root.next !== null && root.next.shuruq
             dim: true
             foreground: root.foreground
             fontFamily: root.fontFamily
