@@ -426,6 +426,85 @@ describe("mawaqit_times.py", () => {
     assert.equal(out.iqama[0], "");
   });
 
+  test("a confData that isn't a JSON object is rejected cleanly", () => {
+    // extract_conf_data only ever captures a {...} span, so a page can't
+    // produce a non-object on its own; stub json.loads to exercise the guard.
+    const res = runHelper(["-c", `
+import importlib.util, json, sys
+import sys; sys.dont_write_bytecode = True  # no scripts/__pycache__ left behind
+spec = importlib.util.spec_from_file_location("m", ${JSON.stringify(mawaqitTimes)})
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.fetch = lambda slug: "var confData = {};"
+m.json.loads = lambda raw: ["not", "a", "dict"]
+sys.argv = ["x", "some-mosque"]
+m.run()
+`]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.stderr, "");
+    assert.deepEqual(JSON.parse(res.stdout), { ok: false, error: "Could not parse prayer time data from the mosque page" });
+  });
+
+  test("an unexpected exception still ends in a JSON error, not a traceback", () => {
+    const res = runHelper(["-c", `
+import importlib.util, sys
+import sys; sys.dont_write_bytecode = True  # no scripts/__pycache__ left behind
+spec = importlib.util.spec_from_file_location("m", ${JSON.stringify(mawaqitTimes)})
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+def boom(slug): raise RuntimeError("<img src=x> secret detail")
+m.fetch = boom
+sys.argv = ["x", "some-mosque"]
+m.run()
+`]);
+    assert.equal(res.status, 0);
+    assert.equal(res.stderr, "");
+    assert.deepEqual(JSON.parse(res.stdout), { ok: false, error: "Unexpected error while reading the mosque page" });
+  });
+
+  test("anything that isn't a mawaqit slug never reaches a request", () => {
+    for (const input of ["../../etc", "a/b", "x?y=1", "https://evil.example/m", "-dash-first", "a".repeat(201)]) {
+      const res = runHelper([driver, mawaqitTimes, JSON.stringify({ body_file: fixturePage }), input]);
+      assert.equal(res.status, 0, res.stderr);
+      assert.deepEqual(JSON.parse(res.stdout), { ok: false, error: "That doesn't look like a mawaqit.net mosque slug or link" }, input);
+      assert.equal(JSON.parse(res.stderr).url, undefined, `no request for ${input}`);
+    }
+  });
+
+  test("redirects are only followed to HTTPS mawaqit.net", () => {
+    const res = runHelper(["-c", `
+import importlib.util, json, urllib.error, urllib.request
+import sys; sys.dont_write_bytecode = True  # no scripts/__pycache__ left behind
+spec = importlib.util.spec_from_file_location("m", ${JSON.stringify(mawaqitTimes)})
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+handler = m.MawaqitOnlyRedirects()
+req = urllib.request.Request("https://mawaqit.net/en/x")
+result = {}
+for url in ["https://mawaqit.net/en/y", "https://www.mawaqit.net/en/y", "http://mawaqit.net/en/y",
+            "https://evil.example/", "https://mawaqit.net.evil.example/", "https://evil.example/mawaqit.net",
+            "ftp://mawaqit.net/x", "file:///etc/passwd"]:
+    try:
+        result[url] = handler.redirect_request(req, None, 302, "Found", {}, url) is not None
+    except urllib.error.URLError:
+        result[url] = False
+uses_handler = any(isinstance(h, m.MawaqitOnlyRedirects) for h in m._opener.handlers)
+default_kept = any(type(h) is urllib.request.HTTPRedirectHandler for h in m._opener.handlers)
+print(json.dumps({"result": result, "uses_handler": uses_handler, "default_kept": default_kept}))
+`]);
+    assert.equal(res.status, 0, res.stderr);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.uses_handler, true);
+    assert.equal(out.default_kept, false);
+    assert.deepEqual(out.result, {
+      "https://mawaqit.net/en/y": true,
+      "https://www.mawaqit.net/en/y": true,
+      "http://mawaqit.net/en/y": false,
+      "https://evil.example/": false,
+      "https://mawaqit.net.evil.example/": false,
+      "https://evil.example/mawaqit.net": false,
+      "ftp://mawaqit.net/x": false,
+      "file:///etc/passwd": false,
+    });
+  });
+
   test("no argument or a blank argument is a usage error", () => {
     for (const args of [[], ["   "]]) {
       const out = runJson([mawaqitTimes, ...args]);

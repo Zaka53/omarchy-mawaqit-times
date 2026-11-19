@@ -2,7 +2,7 @@
 
 Usage: mawaqit_driver.py <path-to-mawaqit_times.py> <scenario-json> <arg>...
 
-urllib.request.urlopen is swapped for a fake chosen by the scenario, so the
+The helper's open_url() is swapped for a fake chosen by the scenario, so the
 real parsing / bounding / error paths run without touching the network:
   {"body_file": path}       respond with that file's bytes
   {"body_size": n}          respond with n bytes of padding
@@ -43,13 +43,13 @@ def fake_urlopen(request, timeout=None):
     return FakeResponse(b" " * scenario["body_size"])
 
 
-urllib.request.urlopen = fake_urlopen
 spec = importlib.util.spec_from_file_location("mawaqit_times", script)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+module.open_url = fake_urlopen
 
 sys.argv = [script] + sys.argv[3:]
 try:
-    module.main()
+    module.run()
 finally:
     sys.stderr.write(json.dumps(seen))

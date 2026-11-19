@@ -84,19 +84,100 @@ function validateReport(report) {
   return report
 }
 
+// ---- Saved mosques: a short list of { mosque, name } entries the user can
+// switch between from the panel. `mosque` is the slug or link exactly as
+// entered (it's what gets passed to the fetch helper); `name` is the mosque's
+// display name from its report, or "" when it wasn't known at save time.
+
+var MAX_SAVED_MOSQUES = 20
+
+// Identity used to tell whether two mosque values point at the same mosque,
+// so a bare slug and its full mawaqit.net link aren't saved twice. Mirrors
+// mosque_slug() in mawaqit_times.py, plus case-folding since slugs are
+// lowercase on mawaqit.net.
+function mosqueKey(value) {
+  var raw = String(value || "").trim()
+  var match = /mawaqit\.net\/[a-z]{2}\/(?:m\/)?([^\/?#]+)/.exec(raw)
+  return (match ? match[1] : raw).toLowerCase()
+}
+
+// Strict check for a saved-mosque list loaded from disk. Unlike a report,
+// one bad entry only drops that entry: the rest of the list is still the
+// user's own data and worth keeping. Duplicates (by mosqueKey) and anything
+// past MAX_SAVED_MOSQUES are dropped too.
+function validateSavedMosques(list) {
+  if (!Array.isArray(list)) return []
+  var result = []
+  var seen = {}
+  for (var i = 0; i < list.length && result.length < MAX_SAVED_MOSQUES; i++) {
+    var entry = list[i]
+    if (!entry || typeof entry !== "object") continue
+    var mosque = validateMosque(entry.mosque)
+    if (!mosque) continue
+    var key = mosqueKey(mosque)
+    if (seen[key]) continue
+    seen[key] = true
+    var name = isBoundedPlainText(entry.name, MAX_NAME_LEN) ? entry.name : ""
+    result.push({ mosque: mosque, name: name })
+  }
+  return result
+}
+
+function isMosqueSaved(list, mosque) {
+  if (!Array.isArray(list) || !mosque) return false
+  var key = mosqueKey(mosque)
+  for (var i = 0; i < list.length; i++) {
+    if (mosqueKey(list[i].mosque) === key) return true
+  }
+  return false
+}
+
+// Returns a new list with `mosque` added at the end, or the existing entry
+// for it renamed in place. Returns the list unchanged when `mosque` isn't
+// valid or the list is already full.
+function addSavedMosque(list, mosque, name) {
+  var current = validateSavedMosques(list)
+  var value = validateMosque(mosque)
+  if (!value) return current
+  var cleanName = isBoundedPlainText(name, MAX_NAME_LEN) ? name : ""
+  var key = mosqueKey(value)
+  for (var i = 0; i < current.length; i++) {
+    if (mosqueKey(current[i].mosque) === key) {
+      if (cleanName !== "") current[i] = { mosque: current[i].mosque, name: cleanName }
+      return current
+    }
+  }
+  if (current.length >= MAX_SAVED_MOSQUES) return current
+  current.push({ mosque: value, name: cleanName })
+  return current
+}
+
+// Returns a new list with `mosque` (matched by mosqueKey) removed.
+function removeSavedMosque(list, mosque) {
+  var key = mosqueKey(mosque)
+  return validateSavedMosques(list).filter(function(entry) { return mosqueKey(entry.mosque) !== key })
+}
+
+// What a saved entry shows in the panel: its name, or the slug/link itself
+// when no name was known when it was saved.
+function savedMosqueLabel(entry) {
+  return entry && entry.name ? entry.name : (entry ? entry.mosque : "")
+}
+
 function parseSettingsFile(text) {
   var raw = String(text || "").trim()
-  if (raw === "") return { mosque: "", fetchedDate: "", report: null }
+  if (raw === "") return { mosque: "", fetchedDate: "", report: null, saved: [] }
   try {
     var parsed = JSON.parse(raw)
     var mosque = validateMosque(typeof parsed.mosque === "string" ? parsed.mosque : "")
     return {
       mosque: mosque === null ? "" : mosque,
       fetchedDate: typeof parsed.fetchedDate === "string" ? parsed.fetchedDate : "",
-      report: validateReport(parsed.report)
+      report: validateReport(parsed.report),
+      saved: validateSavedMosques(parsed.saved)
     }
   } catch (e) {
-    return { mosque: "", fetchedDate: "", report: null }
+    return { mosque: "", fetchedDate: "", report: null, saved: [] }
   }
 }
 
@@ -162,6 +243,18 @@ function iqamaFor(report, index) {
   if (!report || !Array.isArray(report.iqama)) return ""
   var value = report.iqama[index]
   return typeof value === "string" ? value : ""
+}
+
+var MAX_MESSAGE_LEN = 300
+
+// Makes a message from outside the plugin (the helper's error text, its
+// stderr) safe to show: no markup-capable angle brackets, control
+// characters collapsed to spaces, and a bounded length. Anything that isn't
+// a string becomes "", so a caller can fall back to its own wording.
+function displayMessage(value) {
+  if (typeof value !== "string") return ""
+  var text = value.replace(/[<>]/g, "").replace(/[\s\u0000-\u001f\u007f]+/g, " ").trim()
+  return text.length > MAX_MESSAGE_LEN ? text.slice(0, MAX_MESSAGE_LEN - 1) + "…" : text
 }
 
 function formatCountdown(minutesUntil) {

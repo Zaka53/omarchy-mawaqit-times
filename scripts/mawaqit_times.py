@@ -15,6 +15,7 @@ import json
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -27,6 +28,14 @@ USER_AGENT = (
 LABELS = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"]
 
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # a mosque page is a few hundred KB; 5 MiB is generous
+
+# The only hosts a request may ever reach, over HTTPS only. Requests start at
+# https://mawaqit.net/...; this also bounds where a redirect may lead.
+ALLOWED_HOSTS = frozenset({"mawaqit.net", "www.mawaqit.net"})
+
+# A mawaqit.net mosque slug. Checked here as well as in Model.validateMosque,
+# so the helper never builds a request URL from anything else, whoever calls it.
+SLUG_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}")
 
 
 def fail(message):
@@ -137,11 +146,33 @@ def extract_conf_data(html):
     return None
 
 
+class MawaqitOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only if it stays on HTTPS mawaqit.net.
+
+    urllib's default handler follows a redirect to any host and also from
+    HTTPS down to plain HTTP, which would let a redirect pull the request
+    off the fixed source this helper is meant to talk to.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urlsplit(newurl)
+        if target.scheme != "https" or (target.hostname or "").lower() not in ALLOWED_HOSTS:
+            raise urllib.error.URLError("refused a redirect away from https://mawaqit.net")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener(MawaqitOnlyRedirects)
+
+
+def open_url(request, timeout):
+    return _opener.open(request, timeout=timeout)
+
+
 def fetch(slug):
     url = f"https://mawaqit.net/en/{slug}"
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with open_url(request, timeout=10) as response:
             # Bounded read: .read(n) fills up to n bytes and stops, so a
             # hostile or misbehaving endpoint can't force unbounded memory use.
             body = response.read(MAX_RESPONSE_BYTES + 1)
@@ -162,6 +193,8 @@ def main():
         fail("Usage: mawaqit_times.py <mosque-slug-or-url>")
 
     slug = mosque_slug(sys.argv[1])
+    if not SLUG_PATTERN.fullmatch(slug):
+        fail("That doesn't look like a mawaqit.net mosque slug or link")
     html = fetch(slug)
 
     raw = extract_conf_data(html)
@@ -170,7 +203,9 @@ def main():
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
+        fail("Could not parse prayer time data from the mosque page")
+    if not isinstance(data, dict):
         fail("Could not parse prayer time data from the mosque page")
 
     times = data.get("times")
@@ -202,5 +237,16 @@ def main():
     }))
 
 
+def run():
+    """main(), but an unexpected exception still ends in the one JSON line
+    the caller expects instead of a traceback on stderr."""
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        fail("Unexpected error while reading the mosque page")
+
+
 if __name__ == "__main__":
-    main()
+    run()
