@@ -29,6 +29,12 @@ Panel {
   // A settings write requested while another is still running. Only the
   // newest matters, since every write carries the full settings state.
   property string pendingSettingsJson: ""
+  // The document the running settings write sends on its stdin once started.
+  property string settingsWritePayload: ""
+  // The mosque the running fetch sends on its stdin once started.
+  property string fetchPayload: ""
+  // Set when the watchdog below killed a hung fetch, so onExited can say so.
+  property bool fetchTimedOut: false
 
   // Bumped every 30s purely so the "next prayer" bindings below re-evaluate
   // between fetches, since nothing else about `report` changes as time passes.
@@ -73,6 +79,14 @@ Panel {
   // own HTTP read is bounded (see mawaqit_times.py), so real output is at
   // most a few KB; this is a defensive backstop, not the primary limit.
   readonly property int maxHelperOutputChars: 1048576
+  // Same backstop for the settings read. settings_io.py caps the file at
+  // 1 MiB, but its JSON output escapes each control byte as \uXXXX, so the
+  // worst case is six characters per byte of file.
+  readonly property int maxSettingsOutputChars: 6 * 1048576 + 1024
+  // Kills a fetch that is still running after this long. mawaqit_times.py
+  // gives up on its own after 30s; this covers whatever its alarm can't
+  // interrupt (e.g. a hung DNS lookup), so `loading` can never stick.
+  readonly property int fetchWatchdogMs: 45000
 
   function computeBarLabel() {
     root.tick
@@ -106,7 +120,11 @@ Panel {
     if (root.configuredMosque === "" || fetchProc.running) return
     if (!force && root.fetchedDate === Model.todayLocalDate()) return
     root.loading = true
-    fetchProc.command = root.pythonArgv.concat([root.scriptPath, root.configuredMosque])
+    root.fetchTimedOut = false
+    // The mosque goes over stdin, like the settings document: argv is
+    // world-readable via /proc/<pid>/cmdline.
+    root.fetchPayload = root.configuredMosque
+    fetchProc.command = root.pythonArgv.concat([root.scriptPath])
     fetchProc.running = true
   }
 
@@ -120,12 +138,17 @@ Panel {
     settingsReadProc.running = true
   }
 
+  // The document goes to the helper's stdin, not its argv: argv is visible
+  // to every local user via /proc/<pid>/cmdline, and it holds the user's
+  // mosques. JSON.stringify never emits a raw newline, so one line is the
+  // whole document (see settings_io.py).
   function saveSettings(jsonText) {
     if (settingsWriteProc.running) {
       root.pendingSettingsJson = jsonText
       return
     }
-    settingsWriteProc.command = root.pythonArgv.concat([root.settingsIoScript, "write", root.settingsPath, jsonText])
+    root.settingsWritePayload = jsonText
+    settingsWriteProc.command = root.pythonArgv.concat([root.settingsIoScript, "write", root.settingsPath])
     settingsWriteProc.running = true
   }
 
@@ -202,12 +225,14 @@ Panel {
     onExited: function(exitCode) {
       var raw = String(settingsReadStdout.text || "").trim()
       var result = null
-      try {
-        result = JSON.parse(raw)
-      } catch (e) {
-        result = null
+      if (raw.length <= root.maxSettingsOutputChars) {
+        try {
+          result = JSON.parse(raw)
+        } catch (e) {
+          result = null
+        }
       }
-      if (!result || !result.ok) {
+      if (!result || typeof result !== "object" || !result.ok || typeof result.text !== "string") {
         root.configuredMosque = ""
         root.fetchedDate = ""
         root.report = null
@@ -227,6 +252,11 @@ Panel {
     command: []
     clearEnvironment: true
     environment: root.helperEnvironment
+    stdinEnabled: true
+    onStarted: {
+      write(root.settingsWritePayload + "\n")
+      root.settingsWritePayload = ""
+    }
     // Without a stdout collector Quickshell never fully reaps the process,
     // so `running` gets stuck true after the first write and every later
     // saveSettings() call silently no-ops on the running-guard.
@@ -269,10 +299,20 @@ Panel {
     command: []
     clearEnvironment: true
     environment: root.helperEnvironment
+    stdinEnabled: true
+    onStarted: {
+      write(root.fetchPayload + "\n")
+      root.fetchPayload = ""
+    }
     stdout: StdioCollector { id: fetchStdout; waitForEnd: true }
     stderr: StdioCollector { id: fetchStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root.loading = false
+      if (root.fetchTimedOut) {
+        root.fetchTimedOut = false
+        root.errorMessage = "mawaqit.net took too long to respond"
+        return
+      }
       var raw = String(fetchStdout.text || "").trim()
       if (raw === "") {
         // stderr is never shown: it's free-form output (e.g. a traceback),
@@ -290,6 +330,10 @@ Panel {
       try {
         parsed = JSON.parse(raw)
       } catch (e) {
+        root.errorMessage = "Could not parse the prayer-times helper's output"
+        return
+      }
+      if (!parsed || typeof parsed !== "object") {
         root.errorMessage = "Could not parse the prayer-times helper's output"
         return
       }
@@ -312,6 +356,18 @@ Panel {
       if (root.currentMosqueSaved)
         root.savedMosques = Model.addSavedMosque(root.savedMosques, root.configuredMosque, validatedReport.name)
       root.persistSettings()
+    }
+  }
+
+  // Backstop for a fetch that hangs where the helper's own deadline can't
+  // reach. Runs only while fetchProc does; setting running = false sends the
+  // helper SIGTERM, and onExited then reports the timeout.
+  Timer {
+    interval: root.fetchWatchdogMs
+    running: fetchProc.running
+    onTriggered: {
+      root.fetchTimedOut = true
+      fetchProc.running = false
     }
   }
 

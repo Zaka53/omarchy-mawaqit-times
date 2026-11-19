@@ -18,6 +18,7 @@ function loadModel() {
     "parseSettingsFile",
     "validateReport",
     "validateMosque",
+    "validateFetchedDate",
     "todayLocalDate",
     "minutesFromHHMM",
     "currentDayMinutes",
@@ -144,6 +145,37 @@ describe("validateReport", () => {
     assert.equal(Model.validateReport(makeReport({ name: "Evil\r\nSet-Cookie: x" })), null);
   });
 
+  test("rejects invisible bidi/separator characters in displayed fields", () => {
+    for (const ch of ["\u202e", "\u2066", "\u200f", "\u200b", "\u2028", "\u2029", "\u0000", "\u0085", "\ufeff"]) {
+      assert.equal(Model.validateReport(makeReport({ name: `Masjid${ch}x` })), null, JSON.stringify(ch));
+      assert.equal(Model.validateReport(makeReport({ labels: [`F${ch}`, "Dhuhr", "Asr", "Maghrib", "Isha"] })), null, JSON.stringify(ch));
+    }
+  });
+
+  test("keeps ordinary non-Latin names, including ZWNJ", () => {
+    assert.notEqual(Model.validateReport(makeReport({ name: "مسجد النور" })), null);
+    assert.notEqual(Model.validateReport(makeReport({ name: "مسجد\u200cها" })), null);
+  });
+
+  test("returns a copy holding only the known fields", () => {
+    const input = makeReport({ extra: "x".repeat(500000), __proto_like: { nested: true } });
+    const out = Model.validateReport(input);
+    assert.notEqual(out, input);
+    assert.deepEqual(Object.keys(out).sort(), ["fetchedAtEpochMs", "iqama", "jumua", "labels", "name",
+      "nowLocalMinutes", "shuruq", "slug", "times", "timezone"]);
+    assert.notEqual(out.labels, input.labels);
+    assert.notEqual(out.times, input.times);
+    assert.notEqual(out.iqama, input.iqama);
+    assert.deepEqual(out.times, input.times);
+  });
+
+  test("the copy leaves out optional fields the input didn't have", () => {
+    const input = makeReport();
+    delete input.iqama; delete input.slug; delete input.timezone;
+    assert.deepEqual(Object.keys(Model.validateReport(input)).sort(), ["fetchedAtEpochMs", "jumua", "labels",
+      "name", "nowLocalMinutes", "shuruq", "times"]);
+  });
+
   test("rejects an oversized name", () => {
     assert.equal(Model.validateReport(makeReport({ name: "a".repeat(10000) })), null);
   });
@@ -235,6 +267,36 @@ describe("parseSettingsFile", () => {
     const parsed = Model.parseSettingsFile(text);
     assert.equal(parsed.report, null);
     assert.equal(parsed.mosque, "islamic-center-brooklyn");
+  });
+
+  test("drops unknown keys from a planted cache report", () => {
+    const text = JSON.stringify({ mosque: "m", fetchedDate: "2026-08-28", report: makeReport({ blob: "y".repeat(100000) }) });
+    const parsed = Model.parseSettingsFile(text);
+    assert.notEqual(parsed.report, null);
+    assert.equal(parsed.report.blob, undefined);
+    assert.equal(parsed.report.ok, undefined);
+  });
+
+  test("a rejected cache report also drops its fetch date, so the next refresh refetches", () => {
+    const text = JSON.stringify({ mosque: "m", fetchedDate: "2026-08-28", report: makeReport({ name: "a\u202eb" }) });
+    const parsed = Model.parseSettingsFile(text);
+    assert.equal(parsed.report, null);
+    assert.equal(parsed.fetchedDate, "");
+    assert.equal(parsed.mosque, "m");
+  });
+
+  test("a malformed fetch date is dropped", () => {
+    for (const fetchedDate of ["tomorrow", "2026-8-28", "2026-08-28T00:00", 20260828, "x".repeat(10000)]) {
+      const parsed = Model.parseSettingsFile(JSON.stringify({ mosque: "m", fetchedDate, report: makeReport() }));
+      assert.equal(parsed.fetchedDate, "", JSON.stringify(fetchedDate).slice(0, 30));
+    }
+    assert.equal(Model.validateFetchedDate("2026-08-28"), "2026-08-28");
+  });
+
+  test("a top-level value that isn't an object reads as empty settings", () => {
+    for (const text of ["null", "5", '"str"', "[1,2]", "true"]) {
+      assert.deepEqual(Model.parseSettingsFile(text), { mosque: "", fetchedDate: "", report: null, saved: [] }, text);
+    }
   });
 
   test("rejects a planted bad mosque but keeps a valid report", () => {
@@ -337,6 +399,10 @@ describe("displayMessage", () => {
 
   test("collapses control characters and newlines into single spaces", () => {
     assert.equal(Model.displayMessage("Traceback\n  File x\r\n\tline\u0000end"), "Traceback File x line end");
+  });
+
+  test("removes invisible bidi characters", () => {
+    assert.equal(Model.displayMessage("abc\u202edef\u2066g\u2028h\u0085i"), "abcdefg h i");
   });
 
   test("bounds the length", () => {

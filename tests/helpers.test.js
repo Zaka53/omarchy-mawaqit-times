@@ -29,10 +29,12 @@ const helperEnv = Object.fromEntries(
     .matchAll(/"([A-Z_]+)": "([^"]*)"/g)].map((m) => [m[1], m[2]]));
 
 // Runs a helper exactly as Panel.qml would (isolated argv, cleared env plus
-// helperEnvironment), with optional extra env vars layered on top.
-function runHelper(args, extraEnv = {}, argv = pythonArgv) {
+// helperEnvironment), with optional extra env vars layered on top and
+// optional stdin input (how Panel.qml hands settings_io.py a document).
+function runHelper(args, extraEnv = {}, argv = pythonArgv, input = undefined) {
   const res = spawnSync(argv[0], [...argv.slice(1), ...args], {
     env: { ...helperEnv, ...extraEnv },
+    input,
     encoding: "utf8",
     timeout: 10000,
     maxBuffer: 16 * 1024 * 1024,
@@ -41,8 +43,8 @@ function runHelper(args, extraEnv = {}, argv = pythonArgv) {
   return res;
 }
 
-function runJson(args, extraEnv, argv) {
-  const res = runHelper(args, extraEnv, argv);
+function runJson(args, extraEnv, argv, input) {
+  const res = runHelper(args, extraEnv, argv, input);
   assert.equal(res.status, 0, `helper exited ${res.status}: ${res.stderr}`);
   return JSON.parse(res.stdout);
 }
@@ -52,6 +54,12 @@ before(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mawaqit-helpers-"));
 after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
 function tmpPath(name) { return path.join(tmp, name); }
+
+// A settings write exactly as Panel.qml sends it: path in argv, the document
+// as one newline-terminated line on stdin.
+function writeSettings(p, content, extraEnv) {
+  return runJson([settingsIo, "write", p], extraEnv, undefined, content + "\n");
+}
 
 // ---------------------------------------------------------------------------
 // Interpreter isolation: a shadow `json` module must never be imported.
@@ -97,7 +105,7 @@ describe("interpreter isolation", () => {
   });
 
   test("settings_io.py write ignores PYTHON* variables", () => {
-    assertNotPwned(runHelper([settingsIo, "write", tmpPath("iso.json"), "{}"], hostile()));
+    assertNotPwned(runHelper([settingsIo, "write", tmpPath("iso.json")], hostile(), undefined, "{}\n"));
   });
 
   test("mawaqit_times.py ignores PYTHON* variables", () => {
@@ -133,21 +141,21 @@ describe("settings_io.py", () => {
   test("write then read round-trips, including non-ASCII", () => {
     const p = tmpPath("round.json");
     const content = JSON.stringify({ mosque: "mosquée-été", report: null });
-    assert.deepEqual(runJson([settingsIo, "write", p, content]), { ok: true });
+    assert.deepEqual(writeSettings(p, content), { ok: true });
     assert.deepEqual(runJson([settingsIo, "read", p]), { ok: true, exists: true, text: content });
   });
 
   test("write creates missing parent directories with a 0600 file", () => {
     const p = tmpPath(path.join("a", "b", "c", "settings.json"));
-    assert.deepEqual(runJson([settingsIo, "write", p, "{}"]), { ok: true });
+    assert.deepEqual(writeSettings(p, "{}"), { ok: true });
     assert.equal(fs.statSync(p).mode & 0o777, 0o600);
   });
 
   test("write leaves no temp files behind", () => {
     const dir = tmpPath("clean");
     fs.mkdirSync(dir);
-    runJson([settingsIo, "write", path.join(dir, "s.json"), "{}"]);
-    runJson([settingsIo, "write", path.join(dir, "s.json"), "{\"x\":1}"]);
+    writeSettings(path.join(dir, "s.json"), "{}");
+    writeSettings(path.join(dir, "s.json"), "{\"x\":1}");
     assert.deepEqual(fs.readdirSync(dir), ["s.json"]);
   });
 
@@ -166,7 +174,7 @@ describe("settings_io.py", () => {
     const link = tmpPath("link-w.json");
     fs.writeFileSync(target, "ORIGINAL");
     fs.symlinkSync(target, link);
-    assert.deepEqual(runJson([settingsIo, "write", link, "{}"]), { ok: true });
+    assert.deepEqual(writeSettings(link, "{}"), { ok: true });
     assert.equal(fs.readFileSync(target, "utf8"), "ORIGINAL");
     assert.equal(fs.lstatSync(link).isSymbolicLink(), false);
     assert.equal(fs.readFileSync(link, "utf8"), "{}");
@@ -185,7 +193,7 @@ describe("settings_io.py", () => {
   test("write replaces a FIFO without opening it", () => {
     const fifo = tmpPath("fifo-w.json");
     execFileSync("mkfifo", [fifo]);
-    assert.deepEqual(runJson([settingsIo, "write", fifo, "{}"]), { ok: true });
+    assert.deepEqual(writeSettings(fifo, "{}"), { ok: true });
     assert.equal(fs.statSync(fifo).isFile(), true);
   });
 
@@ -220,10 +228,47 @@ describe("settings_io.py", () => {
     assert.equal(out.text, "{��}");
   });
 
+  test("the document is read from stdin, so it never appears in argv", () => {
+    // Panel.qml passes only the action and the path as arguments; a content
+    // argument is refused, so the document can't end up in /proc/<pid>/cmdline.
+    const p = tmpPath("argv.json");
+    const out = runJson([settingsIo, "write", p, '{"mosque":"secret"}'], undefined, undefined, "{}\n");
+    assert.equal(out.ok, false);
+    assert.equal(fs.existsSync(p), false);
+  });
+
+  test("a document of exactly the size limit is written", () => {
+    const p = tmpPath("exact-w.json");
+    assert.deepEqual(writeSettings(p, "a".repeat(MAX_SETTINGS_BYTES)), { ok: true });
+    assert.equal(fs.statSync(p).size, MAX_SETTINGS_BYTES);
+  });
+
+  test("a document over the size limit is rejected without writing", () => {
+    const p = tmpPath("big-w.json");
+    assert.deepEqual(writeSettings(p, "a".repeat(MAX_SETTINGS_BYTES + 1)),
+      { ok: false, error: "settings content is too large" });
+    assert.equal(fs.existsSync(p), false);
+  });
+
+  test("input without its terminating newline is rejected, not partially written", () => {
+    const p = tmpPath("partial.json");
+    for (const input of ["", '{"mosque":"trunc']) {
+      assert.deepEqual(runJson([settingsIo, "write", p], undefined, undefined, input),
+        { ok: false, error: "settings content was incomplete" }, JSON.stringify(input));
+    }
+    assert.equal(fs.existsSync(p), false);
+  });
+
+  test("only the first line is written", () => {
+    const p = tmpPath("first-line.json");
+    assert.deepEqual(runJson([settingsIo, "write", p], undefined, undefined, "{}\n{\"x\":1}\n"), { ok: true });
+    assert.equal(fs.readFileSync(p, "utf8"), "{}");
+  });
+
   test("bad invocations report an error and still exit 0", () => {
-    for (const args of [[], ["read"], ["delete", tmpPath("x")], ["write", tmpPath("x")],
-      ["write", tmpPath("x"), "a", "b"]]) {
-      const out = runJson([settingsIo, ...args]);
+    for (const args of [[], ["read"], ["read", tmpPath("x"), "extra"], ["delete", tmpPath("x")],
+      ["write", tmpPath("x"), "{}"], ["write", tmpPath("x"), "a", "b"]]) {
+      const out = runJson([settingsIo, ...args], undefined, undefined, "{}\n");
       assert.equal(out.ok, false, JSON.stringify(args));
       assert.equal(typeof out.error, "string");
     }
@@ -235,8 +280,9 @@ describe("settings_io.py", () => {
 // ---------------------------------------------------------------------------
 
 describe("mawaqit_times.py", () => {
-  function fetchWith(scenario, ...args) {
-    const res = runHelper([driver, mawaqitTimes, JSON.stringify(scenario), ...args]);
+  // The mosque goes to the helper's stdin, exactly as Panel.qml sends it.
+  function fetchWith(scenario, mosque) {
+    const res = runHelper([driver, mawaqitTimes, JSON.stringify(scenario)], undefined, undefined, mosque + "\n");
     assert.equal(res.status, 0, res.stderr);
     return { out: JSON.parse(res.stdout), seen: JSON.parse(res.stderr) };
   }
@@ -355,6 +401,35 @@ describe("mawaqit_times.py", () => {
     assert.equal(out.jumua, "");
   });
 
+  test("invisible bidi/control characters are stripped from display fields", () => {
+    // U+202E would visually reverse the rest of the name, U+2028 breaks the
+    // line even in plain text; neither survives, ZWNJ (used in Persian) does.
+    const { out } = fetchWith(pageWith(JSON.stringify({
+      name: "Masjid\u202e evil\u2028 line\u0000\u2066x\u2069 \u200b \u200cok\ufeff",
+      times: ["05:00", "13:00", "16:00", "19:00", "21:00"],
+    })), "m");
+    assert.equal(out.ok, true);
+    assert.equal(out.name, "Masjid evil linex \u200cok");
+  });
+
+  test("a fetch that outlasts the deadline is abandoned with an error", () => {
+    const started = Date.now();
+    const { out } = fetchWith({ stall_seconds: 30, deadline: 1 }, "m");
+    assert.deepEqual(out, { ok: false, error: "mawaqit.net took too long to respond" });
+    assert.ok(Date.now() - started < 8000);
+  });
+
+  test("the deadline is cleared once the page has been read", () => {
+    // Parsing happens after the alarm is cancelled, so a fast fetch followed
+    // by a pause can't be cut off with a misleading timeout.
+    const { out } = fetchWith({ body_file: fixturePage, deadline: 1, sleep_after: 1.5 }, "m");
+    assert.equal(out.ok, true);
+  });
+
+  test("the whole-request deadline is 30 seconds", () => {
+    assert.match(fs.readFileSync(mawaqitTimes, "utf8"), /^FETCH_DEADLINE_SECONDS = 30$/m);
+  });
+
   test("display fields are length-capped", () => {
     const { out } = fetchWith(pageWith(
       `{"name": "${"n".repeat(500)}", "times": ["${"9".repeat(50)}", "2", "3", "4", "5"]}`), "m");
@@ -436,9 +511,9 @@ spec = importlib.util.spec_from_file_location("m", ${JSON.stringify(mawaqitTimes
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.fetch = lambda slug: "var confData = {};"
 m.json.loads = lambda raw: ["not", "a", "dict"]
-sys.argv = ["x", "some-mosque"]
+sys.argv = ["x"]
 m.run()
-`]);
+`], undefined, undefined, "some-mosque\n");
     assert.equal(res.status, 0, res.stderr);
     assert.equal(res.stderr, "");
     assert.deepEqual(JSON.parse(res.stdout), { ok: false, error: "Could not parse prayer time data from the mosque page" });
@@ -452,9 +527,9 @@ spec = importlib.util.spec_from_file_location("m", ${JSON.stringify(mawaqitTimes
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 def boom(slug): raise RuntimeError("<img src=x> secret detail")
 m.fetch = boom
-sys.argv = ["x", "some-mosque"]
+sys.argv = ["x"]
 m.run()
-`]);
+`], undefined, undefined, "some-mosque\n");
     assert.equal(res.status, 0);
     assert.equal(res.stderr, "");
     assert.deepEqual(JSON.parse(res.stdout), { ok: false, error: "Unexpected error while reading the mosque page" });
@@ -462,7 +537,7 @@ m.run()
 
   test("anything that isn't a mawaqit slug never reaches a request", () => {
     for (const input of ["../../etc", "a/b", "x?y=1", "https://evil.example/m", "-dash-first", "a".repeat(201)]) {
-      const res = runHelper([driver, mawaqitTimes, JSON.stringify({ body_file: fixturePage }), input]);
+      const res = runHelper([driver, mawaqitTimes, JSON.stringify({ body_file: fixturePage })], undefined, undefined, input + "\n");
       assert.equal(res.status, 0, res.stderr);
       assert.deepEqual(JSON.parse(res.stdout), { ok: false, error: "That doesn't look like a mawaqit.net mosque slug or link" }, input);
       assert.equal(JSON.parse(res.stderr).url, undefined, `no request for ${input}`);
@@ -505,11 +580,33 @@ print(json.dumps({"result": result, "uses_handler": uses_handler, "default_kept"
     });
   });
 
-  test("no argument or a blank argument is a usage error", () => {
-    for (const args of [[], ["   "]]) {
-      const out = runJson([mawaqitTimes, ...args]);
+  test("no input or a blank line is a usage error", () => {
+    for (const input of ["", "\n", "   \n"]) {
+      const out = runJson([mawaqitTimes], undefined, undefined, input);
       assert.equal(out.ok, false);
-      assert.match(out.error, /^Usage:/);
+      assert.match(out.error, /^Usage:/, JSON.stringify(input));
     }
+  });
+
+  test("the mosque is read from stdin, so it never appears in argv", () => {
+    // An argument is refused outright (and nothing is requested), so the
+    // mosque can't end up in /proc/<pid>/cmdline.
+    const res = runHelper([driver, mawaqitTimes, JSON.stringify({ body_file: fixturePage }), "test-mosque"],
+      undefined, undefined, "test-mosque\n");
+    assert.match(JSON.parse(res.stdout).error, /^Usage:/);
+    assert.equal(JSON.parse(res.stderr).url, undefined);
+  });
+
+  test("only the first stdin line is the mosque", () => {
+    const res = runHelper([driver, mawaqitTimes, JSON.stringify({ body_file: fixturePage })],
+      undefined, undefined, "first-mosque\nsecond\n");
+    assert.equal(JSON.parse(res.stderr).url, "https://mawaqit.net/en/first-mosque");
+  });
+
+  test("oversized stdin input is rejected without a request", () => {
+    const res = runHelper([driver, mawaqitTimes, JSON.stringify({ body_file: fixturePage })],
+      undefined, undefined, "a".repeat(5000) + "\n");
+    assert.equal(JSON.parse(res.stdout).ok, false);
+    assert.equal(JSON.parse(res.stderr).url, undefined);
   });
 });
