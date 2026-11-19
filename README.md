@@ -6,7 +6,7 @@ page. Prayer time lookup runs through a small bundled Python script; the QML
 side only handles display, countdown, and settings.
 
 The bar pill shows the next prayer and its time (e.g. `Asr 16:43`). Click it
-to open a panel with all five prayers, sunrise, and Jumu'a, with the next
+to open a panel with all five prayers, shuruk, and Jumu'a, with the next
 prayer highlighted.
 
 ![The Preview](preview.png)
@@ -39,7 +39,7 @@ The choice is stored in `~/.local/state/omarchy/settings/mawaqit-times.json`.
 reads the `confData` JSON object embedded in it (the same data the page
 itself renders from — there's no official public API for this). It prints a
 small JSON summary to stdout: the mosque name, timezone, the five prayer
-times, sunrise, and Jumu'a. The QML panel runs this script via Quickshell's
+times, shuruk, and Jumu'a. The QML panel runs this script via Quickshell's
 `Process` type on open and every 5 minutes, and works out which prayer is
 next locally so the bar pill can update between fetches without re-running
 the script.
