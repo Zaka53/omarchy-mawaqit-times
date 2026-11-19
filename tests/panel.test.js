@@ -46,3 +46,35 @@ test("python is always launched isolated, never with a bare argv", () => {
   assert.equal(assignments.length, 3);
   for (const a of assignments) assert.match(a, /= root\.pythonArgv\.concat\(\[/);
 });
+
+test("settings are only ever written as the full state", () => {
+  // A write built from only some fields would silently drop the rest (e.g.
+  // the saved-mosque list), so every write goes through persistSettings(),
+  // apart from the queued write being flushed after a running one.
+  const calls = src.match(/root\.saveSettings\([^\n]*/g);
+  assert.deepEqual(calls.sort(), ["root.saveSettings(JSON.stringify({", "root.saveSettings(next)"].sort());
+  const persist = src.match(/function persistSettings\(\) \{([\s\S]*?)\n  \}/);
+  assert.ok(persist);
+  for (const key of ["mosque", "fetchedDate", "report", "saved"]) assert.match(persist[1], new RegExp(`^      ${key}: `, "m"));
+});
+
+test("every Text the plugin draws is plain text", () => {
+  // Text defaults to Text.AutoText, which renders markup in untrusted input
+  // (a mosque name, an error message) as rich text. All plugin text goes
+  // through the PlainText component, which pins Text.PlainText.
+  const component = src.match(/component PlainText: Text \{\n    textFormat: Text\.PlainText\n  \}/);
+  assert.ok(component, "PlainText component pins Text.PlainText");
+  const bareTexts = src.match(/^\s*Text \{$/gm) || [];
+  assert.deepEqual(bareTexts, [], "no bare Text elements");
+});
+
+test("error messages are fixed wording or sanitized before display", () => {
+  // errorMessage reaches the panel and the bar tooltip, so anything not
+  // written by the plugin itself has to pass Model.displayMessage first.
+  const assignments = src.match(/root\.errorMessage = .*/g);
+  assert.ok(assignments.length > 0);
+  for (const a of assignments) {
+    assert.match(a, /^root\.errorMessage = ("[^"]*"|Model\.displayMessage\([^)]*\)( \|\| "[^"]*")?)$/, a);
+  }
+  assert.doesNotMatch(src, /errorMessage = [^\n]*fetchStderr/);
+});

@@ -22,8 +22,18 @@ function loadModel() {
     "minutesFromHHMM",
     "currentDayMinutes",
     "nextPrayer",
+    "SHURUQ_LABEL",
     "iqamaFor",
-    "formatCountdown"
+    "formatCountdown",
+    "MAX_SAVED_MOSQUES",
+    "mosqueKey",
+    "validateSavedMosques",
+    "isMosqueSaved",
+    "addSavedMosque",
+    "removeSavedMosque",
+    "savedMosqueLabel",
+    "displayMessage",
+    "MAX_MESSAGE_LEN"
   ];
   const body = src + "\n;return {" + exportedNames.map(n => n).join(",") + "};";
   return new Function(body)();
@@ -192,11 +202,11 @@ describe("validateReport", () => {
 
 describe("parseSettingsFile", () => {
   test("returns empty defaults for an empty string", () => {
-    assert.deepEqual(Model.parseSettingsFile(""), { mosque: "", fetchedDate: "", report: null });
+    assert.deepEqual(Model.parseSettingsFile(""), { mosque: "", fetchedDate: "", report: null, saved: [] });
   });
 
   test("returns empty defaults for unparseable JSON", () => {
-    assert.deepEqual(Model.parseSettingsFile("{not json"), { mosque: "", fetchedDate: "", report: null });
+    assert.deepEqual(Model.parseSettingsFile("{not json"), { mosque: "", fetchedDate: "", report: null, saved: [] });
   });
 
   test("passes through a fully valid cache file", () => {
@@ -239,6 +249,107 @@ describe("parseSettingsFile", () => {
   });
 });
 
+describe("saved mosques", () => {
+  const url = "https://mawaqit.net/en/islamic-center-brooklyn";
+  const slug = "islamic-center-brooklyn";
+
+  test("mosqueKey treats a slug and its mawaqit.net link as the same mosque", () => {
+    assert.equal(Model.mosqueKey(url), slug);
+    assert.equal(Model.mosqueKey("https://mawaqit.net/de/m/Islamic-Center-Brooklyn?x=1"), slug);
+    assert.equal(Model.mosqueKey(slug), slug);
+  });
+
+  test("addSavedMosque appends a new entry with its name", () => {
+    const list = Model.addSavedMosque([], slug, "Islamic Center of Brooklyn");
+    assert.deepEqual(list, [{ mosque: slug, name: "Islamic Center of Brooklyn" }]);
+  });
+
+  test("addSavedMosque does not duplicate a mosque saved under its link", () => {
+    const list = Model.addSavedMosque([{ mosque: url, name: "" }], slug, "Islamic Center of Brooklyn");
+    assert.deepEqual(list, [{ mosque: url, name: "Islamic Center of Brooklyn" }]);
+  });
+
+  test("addSavedMosque keeps an existing name when given none", () => {
+    const list = Model.addSavedMosque([{ mosque: slug, name: "Known" }], slug, "");
+    assert.deepEqual(list, [{ mosque: slug, name: "Known" }]);
+  });
+
+  test("addSavedMosque rejects an invalid mosque and a full list", () => {
+    assert.deepEqual(Model.addSavedMosque([], "bad\nslug", "x"), []);
+    const full = Array.from({ length: Model.MAX_SAVED_MOSQUES }, (_, i) => ({ mosque: "m" + i, name: "" }));
+    assert.equal(Model.addSavedMosque(full, "one-more", "").length, Model.MAX_SAVED_MOSQUES);
+  });
+
+  test("addSavedMosque does not mutate its input", () => {
+    const list = [{ mosque: slug, name: "" }];
+    Model.addSavedMosque(list, slug, "Named");
+    assert.deepEqual(list, [{ mosque: slug, name: "" }]);
+  });
+
+  test("removeSavedMosque removes by identity, not exact spelling", () => {
+    const list = [{ mosque: url, name: "A" }, { mosque: "other-mosque", name: "B" }];
+    assert.deepEqual(Model.removeSavedMosque(list, slug), [{ mosque: "other-mosque", name: "B" }]);
+  });
+
+  test("isMosqueSaved matches by identity", () => {
+    assert.equal(Model.isMosqueSaved([{ mosque: url, name: "" }], slug), true);
+    assert.equal(Model.isMosqueSaved([{ mosque: url, name: "" }], "other"), false);
+    assert.equal(Model.isMosqueSaved([], ""), false);
+  });
+
+  test("validateSavedMosques drops bad entries but keeps the good ones", () => {
+    const list = Model.validateSavedMosques([
+      { mosque: slug, name: "Good" },
+      { mosque: "bad\nslug", name: "x" },
+      "not an object",
+      null,
+      { mosque: url, name: "duplicate of the first" },
+      { mosque: "markup-name", name: "<img src=x>" }
+    ]);
+    assert.deepEqual(list, [{ mosque: slug, name: "Good" }, { mosque: "markup-name", name: "" }]);
+  });
+
+  test("validateSavedMosques caps the list length", () => {
+    const many = Array.from({ length: 100 }, (_, i) => ({ mosque: "m" + i, name: "" }));
+    assert.equal(Model.validateSavedMosques(many).length, Model.MAX_SAVED_MOSQUES);
+    assert.deepEqual(Model.validateSavedMosques("nope"), []);
+  });
+
+  test("savedMosqueLabel falls back to the slug when no name is known", () => {
+    assert.equal(Model.savedMosqueLabel({ mosque: slug, name: "Named" }), "Named");
+    assert.equal(Model.savedMosqueLabel({ mosque: slug, name: "" }), slug);
+  });
+
+  test("parseSettingsFile loads the saved list and treats a missing one as empty", () => {
+    const withSaved = Model.parseSettingsFile(JSON.stringify({ mosque: slug, saved: [{ mosque: url, name: "A" }] }));
+    assert.deepEqual(withSaved.saved, [{ mosque: url, name: "A" }]);
+    const withoutSaved = Model.parseSettingsFile(JSON.stringify({ mosque: slug }));
+    assert.deepEqual(withoutSaved.saved, []);
+  });
+});
+
+describe("displayMessage", () => {
+  test("strips markup-shaped input so it can't render as rich text", () => {
+    const out = Model.displayMessage('<img src="https://attacker.example/pixel.png">No mosque');
+    assert.ok(!/[<>]/.test(out));
+    assert.equal(out, 'img src="https://attacker.example/pixel.png"No mosque');
+  });
+
+  test("collapses control characters and newlines into single spaces", () => {
+    assert.equal(Model.displayMessage("Traceback\n  File x\r\n\tline\u0000end"), "Traceback File x line end");
+  });
+
+  test("bounds the length", () => {
+    const out = Model.displayMessage("x".repeat(100000));
+    assert.equal(out.length, Model.MAX_MESSAGE_LEN);
+    assert.ok(out.endsWith("…"));
+  });
+
+  test("anything that isn't a string becomes empty", () => {
+    for (const value of [undefined, null, 42, {}, ["<b>"]]) assert.equal(Model.displayMessage(value), "");
+  });
+});
+
 describe("todayLocalDate", () => {
   test("formats as YYYY-MM-DD", () => {
     assert.match(Model.todayLocalDate(), /^\d{4}-\d{2}-\d{2}$/);
@@ -267,6 +378,35 @@ describe("nextPrayer", () => {
     assert.equal(result.index, 0);
     assert.equal(result.label, "Fajr");
     assert.equal(result.tomorrow, false);
+  });
+
+  test("returns Shuruk between Fajr and sunrise", () => {
+    const fetchedAt = new Date("2026-08-28T00:00:00Z").getTime();
+    const report = makeReport({ fetchedAtEpochMs: fetchedAt, nowLocalMinutes: 340 }); // 05:40, after Fajr, before Shuruk 06:16
+    const result = Model.nextPrayer(report, fetchedAt);
+    assert.equal(result.shuruq, true);
+    assert.equal(result.index, -1);
+    assert.equal(result.label, Model.SHURUQ_LABEL);
+    assert.equal(result.time, "06:16");
+    assert.equal(result.minutesUntil, 36);
+    assert.equal(result.tomorrow, false);
+  });
+
+  test("returns Dhuhr once sunrise has passed", () => {
+    const fetchedAt = new Date("2026-08-28T00:00:00Z").getTime();
+    const report = makeReport({ fetchedAtEpochMs: fetchedAt, nowLocalMinutes: 400 }); // 06:40
+    const result = Model.nextPrayer(report, fetchedAt);
+    assert.equal(result.shuruq, false);
+    assert.equal(result.index, 1);
+    assert.equal(result.label, "Dhuhr");
+  });
+
+  test("skips Shuruk when the report has no shuruq time", () => {
+    const fetchedAt = new Date("2026-08-28T00:00:00Z").getTime();
+    const report = makeReport({ fetchedAtEpochMs: fetchedAt, nowLocalMinutes: 340, shuruq: "" });
+    const result = Model.nextPrayer(report, fetchedAt);
+    assert.equal(result.index, 1);
+    assert.equal(result.label, "Dhuhr");
   });
 
   test("wraps to tomorrow's Fajr when every prayer today has passed", () => {

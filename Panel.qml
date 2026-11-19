@@ -23,12 +23,19 @@ Panel {
   // on; compared against Model.todayLocalDate() to cap automatic fetches
   // to once per day.
   property string fetchedDate: ""
+  // Mosques the user saved for quick switching, as validated
+  // { mosque, name } entries (see Model.validateSavedMosques).
+  property var savedMosques: []
+  // A settings write requested while another is still running. Only the
+  // newest matters, since every write carries the full settings state.
+  property string pendingSettingsJson: ""
 
   // Bumped every 30s purely so the "next prayer" bindings below re-evaluate
   // between fetches, since nothing else about `report` changes as time passes.
   property int tick: 0
 
   readonly property bool showEditor: editingMosque || configuredMosque === ""
+  readonly property bool currentMosqueSaved: Model.isMosqueSaved(root.savedMosques, root.configuredMosque)
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
@@ -114,9 +121,35 @@ Panel {
   }
 
   function saveSettings(jsonText) {
-    if (settingsWriteProc.running) return
+    if (settingsWriteProc.running) {
+      root.pendingSettingsJson = jsonText
+      return
+    }
     settingsWriteProc.command = root.pythonArgv.concat([root.settingsIoScript, "write", root.settingsPath, jsonText])
     settingsWriteProc.running = true
+  }
+
+  // Writes the whole current state. Every change goes through here so a
+  // write for one field can never drop another (e.g. the saved list).
+  function persistSettings() {
+    root.saveSettings(JSON.stringify({
+      mosque: root.configuredMosque,
+      fetchedDate: root.fetchedDate,
+      report: root.report,
+      saved: root.savedMosques
+    }))
+  }
+
+  function saveCurrentMosque() {
+    if (root.configuredMosque === "") return
+    var name = root.report ? root.report.name : ""
+    root.savedMosques = Model.addSavedMosque(root.savedMosques, root.configuredMosque, name)
+    root.persistSettings()
+  }
+
+  function removeSavedMosque(mosque) {
+    root.savedMosques = Model.removeSavedMosque(root.savedMosques, mosque)
+    root.persistSettings()
   }
 
   function startEditingMosque() {
@@ -146,7 +179,7 @@ Panel {
     root.report = null
     root.errorMessage = ""
     root.fetchedDate = ""
-    root.saveSettings(JSON.stringify({ mosque: value, fetchedDate: "", report: null }))
+    root.persistSettings()
     Qt.callLater(function() { root.refresh(true) })
   }
 
@@ -184,6 +217,7 @@ Panel {
       root.configuredMosque = parsed.mosque
       root.fetchedDate = parsed.fetchedDate
       root.report = parsed.report
+      root.savedMosques = parsed.saved
     }
   }
 
@@ -205,6 +239,11 @@ Panel {
         result = null
       }
       if (!result || !result.ok) console.warn("mawaqit-times: failed to save settings")
+      if (root.pendingSettingsJson !== "") {
+        var next = root.pendingSettingsJson
+        root.pendingSettingsJson = ""
+        root.saveSettings(next)
+      }
     }
   }
 
@@ -236,7 +275,11 @@ Panel {
       root.loading = false
       var raw = String(fetchStdout.text || "").trim()
       if (raw === "") {
-        root.errorMessage = String(fetchStderr.text || "").trim() || "The prayer-times helper produced no output"
+        // stderr is never shown: it's free-form output (e.g. a traceback),
+        // not a message meant for the user. Logged, bounded, for debugging.
+        var stderrText = Model.displayMessage(fetchStderr.text)
+        if (stderrText !== "") console.warn("mawaqit-times: helper stderr: " + stderrText)
+        root.errorMessage = "The prayer-times helper produced no output"
         return
       }
       if (raw.length > root.maxHelperOutputChars) {
@@ -251,7 +294,7 @@ Panel {
         return
       }
       if (!parsed.ok) {
-        root.errorMessage = parsed.error || "Could not fetch prayer times"
+        root.errorMessage = Model.displayMessage(parsed.error) || "Could not fetch prayer times"
         return
       }
       // Validated the same way as a reloaded cache report (Model.parseSettingsFile)
@@ -264,11 +307,11 @@ Panel {
       root.errorMessage = ""
       root.report = validatedReport
       root.fetchedDate = Model.todayLocalDate()
-      root.saveSettings(JSON.stringify({
-        mosque: root.configuredMosque,
-        fetchedDate: root.fetchedDate,
-        report: validatedReport
-      }))
+      // A mosque saved before its first fetch only knows its slug; give
+      // its saved entry the real name now that one is known.
+      if (root.currentMosqueSaved)
+        root.savedMosques = Model.addSavedMosque(root.savedMosques, root.configuredMosque, validatedReport.name)
+      root.persistSettings()
     }
   }
 
@@ -303,7 +346,7 @@ Panel {
     open: root.opened
     centerOnBar: true
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(320))
+    contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     PanelKeyCatcher {
@@ -334,7 +377,7 @@ Panel {
           width: parent.width
           spacing: Style.space(8)
 
-          Text {
+          PlainText {
             text: "Mosque slug or mawaqit.net link"
             color: Qt.darker(root.foreground, 1.4)
             font.family: root.fontFamily
@@ -360,7 +403,7 @@ Panel {
             }
           }
 
-          Text {
+          PlainText {
             visible: root.configuredMosque !== ""
             text: "Enter to save, Escape to cancel"
             color: Qt.darker(root.foreground, 1.6)
@@ -371,16 +414,57 @@ Panel {
 
         Row {
           visible: !root.showEditor
-          spacing: Style.space(6)
+          spacing: Style.space(16)
 
-          TapHandler { onTapped: root.startEditingMosque() }
-          HoverHandler { cursorShape: Qt.PointingHandCursor }
-
-          Text {
+          PlainText {
             text: "✎ change mosque"
             color: Qt.darker(root.foreground, 1.5)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
+
+            TapHandler { onTapped: root.startEditingMosque() }
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+          }
+
+          PlainText {
+            visible: !root.currentMosqueSaved && root.savedMosques.length < Model.MAX_SAVED_MOSQUES
+            text: "☆ save mosque"
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+
+            TapHandler { onTapped: root.saveCurrentMosque() }
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+          }
+        }
+
+        // ---- Saved mosques: click one to switch to it, × to forget it.
+        //      Shown in the editor too, so picking a saved mosque is an
+        //      alternative to typing one.
+        Column {
+          visible: root.savedMosques.length > 0
+          width: parent.width
+          spacing: Style.space(6)
+
+          PanelSectionHeader {
+            text: "Saved mosques"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Repeater {
+            model: root.savedMosques
+
+            SavedMosqueRow {
+              required property var modelData
+              width: parent.width
+              label: Model.savedMosqueLabel(modelData)
+              current: Model.mosqueKey(modelData.mosque) === Model.mosqueKey(root.configuredMosque)
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onSelected: root.commitMosque(modelData.mosque)
+              onRemoved: root.removeSavedMosque(modelData.mosque)
+            }
           }
         }
 
@@ -392,7 +476,7 @@ Panel {
           opacity: 0.12
         }
 
-        Text {
+        PlainText {
           visible: !root.showEditor && root.errorMessage !== "" && !root.report
           width: parent.width
           text: root.errorMessage
@@ -402,7 +486,7 @@ Panel {
           font.pixelSize: Style.font.bodySmall
         }
 
-        Text {
+        PlainText {
           visible: !root.showEditor && root.loading && !root.report
           text: "Fetching prayer times…"
           color: Qt.darker(root.foreground, 1.5)
@@ -414,7 +498,7 @@ Panel {
         Column {
           visible: !root.showEditor && root.report !== null
           width: parent.width
-          spacing: Style.space(6)
+          spacing: Style.space(8)
 
           Repeater {
             model: root.report ? root.report.labels : []
@@ -441,8 +525,9 @@ Panel {
           PrayerRow {
             visible: root.report && root.report.shuruq !== ""
             width: parent.width
-            label: "Sunrise"
+            label: Model.SHURUQ_LABEL
             time: root.report ? root.report.shuruq : ""
+            highlighted: root.next !== null && root.next.shuruq
             dim: true
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -459,6 +544,61 @@ Panel {
           }
         }
       }
+    }
+  }
+
+  // Every Text the plugin draws. Plain text only, never Text.AutoText: some
+  // of what's shown (mosque names, error messages) comes from mawaqit.net or
+  // from the settings file, and AutoText would render markup in it as rich
+  // text (an <img> could load a remote resource the moment it's drawn).
+  component PlainText: Text {
+    textFormat: Text.PlainText
+  }
+
+  // One saved mosque: its name (accented when it's the active mosque) and a
+  // × to remove it. Plain text only, since the name comes from mawaqit.net.
+  component SavedMosqueRow: Item {
+    id: savedRow
+    property string label: ""
+    property bool current: false
+    property color foreground: Color.foreground
+    property string fontFamily: Style.font.family
+    signal selected()
+    signal removed()
+
+    implicitHeight: Math.max(nameText.implicitHeight, removeText.implicitHeight)
+
+    PlainText {
+      id: nameText
+      anchors.left: parent.left
+      anchors.right: removeText.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      text: savedRow.label
+      // Set explicitly so a right-to-left name (e.g. an Arabic mosque name)
+      // still lines up with the others instead of auto-flipping to the right.
+      horizontalAlignment: Text.AlignLeft
+      elide: Text.ElideRight
+      color: savedRow.current ? Color.accent : savedRow.foreground
+      font.family: savedRow.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      font.bold: savedRow.current
+
+      TapHandler { onTapped: savedRow.selected() }
+      HoverHandler { cursorShape: Qt.PointingHandCursor }
+    }
+
+    PlainText {
+      id: removeText
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      text: "×"
+      color: Qt.darker(savedRow.foreground, 1.5)
+      font.family: savedRow.fontFamily
+      font.pixelSize: Style.font.body
+
+      TapHandler { onTapped: savedRow.removed() }
+      HoverHandler { cursorShape: Qt.PointingHandCursor }
     }
   }
 
@@ -479,21 +619,21 @@ Panel {
 
     implicitHeight: Math.max(labelText.implicitHeight, timeText.implicitHeight, iqamaText.implicitHeight)
 
-    Text {
+    PlainText {
       id: labelText
       anchors.left: parent.left
       anchors.verticalCenter: parent.verticalCenter
       text: prayerRow.label
       color: prayerRow.highlighted ? Color.accent : (prayerRow.dim ? Qt.darker(prayerRow.foreground, 1.5) : prayerRow.foreground)
       font.family: prayerRow.fontFamily
-      font.pixelSize: prayerRow.dim ? Style.font.bodySmall : Style.font.body
+      font.pixelSize: prayerRow.dim ? Style.font.body : Style.font.title
       font.bold: prayerRow.highlighted
     }
 
     // Stays dimmed even on the highlighted row: the iqama time is secondary
     // to the adhan time the row is really about. Same grey as the dimmed
     // sunrise/jumu'a rows, so all the secondary times read as one tier.
-    Text {
+    PlainText {
       id: iqamaText
       visible: prayerRow.iqama !== ""
       anchors.right: timeText.left
@@ -502,17 +642,17 @@ Panel {
       text: prayerRow.iqama
       color: Qt.darker(prayerRow.foreground, 1.5)
       font.family: prayerRow.fontFamily
-      font.pixelSize: Style.font.bodySmall
+      font.pixelSize: Style.font.body
     }
 
-    Text {
+    PlainText {
       id: timeText
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
       text: prayerRow.time
       color: prayerRow.highlighted ? Color.accent : (prayerRow.dim ? Qt.darker(prayerRow.foreground, 1.5) : prayerRow.foreground)
       font.family: prayerRow.fontFamily
-      font.pixelSize: prayerRow.dim ? Style.font.bodySmall : Style.font.body
+      font.pixelSize: prayerRow.dim ? Style.font.body : Style.font.title
       font.bold: prayerRow.highlighted
     }
   }

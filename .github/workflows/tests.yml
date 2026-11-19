@@ -1,0 +1,35 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+# The tests only read the checkout; nothing here needs to write to the repo.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Actions are pinned to full commit SHAs so a moved tag can't change
+      # what runs here. The comment names the release each SHA belongs to.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # The helper tests run /usr/bin/python3 exactly as Panel.qml does
+      # (isolated, cleared environment); the runner image ships it.
+      - name: Show Python version
+        run: /usr/bin/python3 --version
+
+      - name: Run tests
+        # Files listed explicitly: Node 22 doesn't accept a directory here.
+        run: node --test tests/*.test.js
